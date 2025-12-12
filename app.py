@@ -36,8 +36,8 @@ app.config['SECRET_KEY'] = 'your_secret_key'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Initialize OpenAI LLM
-OPENAI_API_KEY = "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"
-OPENROUTER_API_KEY = "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"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") 
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") 
 #client = genai.Client(api_key="AIzaSyDz3IIqX2E74NaYnXK3CmnKRBOCZekOa8A")
 
 def initialize_llm(llm_provider):
