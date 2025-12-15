@@ -17,3 +17,5 @@ openai
 beautifulsoup4
 flask-session
 langchain-openai
+
+
