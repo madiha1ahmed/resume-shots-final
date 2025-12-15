@@ -12,10 +12,10 @@ redis
 eventlet
 pandas
 pdfplumber
-langchain
 openai
 beautifulsoup4
 flask-session
-langchain-openai
+langchain==0.1.12
+langchain-openai==0.0.8
 
 
