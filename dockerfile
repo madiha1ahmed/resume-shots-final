@@ -17,4 +17,6 @@ EXPOSE 8000
 ENV FLASK_APP=app.py
 
 # Run the Flask app using gunicorn
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+#CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+CMD gunicorn -w 1 -k eventlet -b 0.0.0.0:8000 app:app --timeout 120
+
