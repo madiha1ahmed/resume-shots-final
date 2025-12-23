@@ -18,6 +18,8 @@ from bs4 import BeautifulSoup
 from flask_socketio import SocketIO
 import time
 import redis
+from dotenv import load_dotenv
+load_dotenv()
 #from google import genai
 
 app = Flask(__name__)
