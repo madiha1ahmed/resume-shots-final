@@ -17,17 +17,18 @@ import requests
 from bs4 import BeautifulSoup
 from flask_socketio import SocketIO
 import time
-import redis
+#import redis
 from dotenv import load_dotenv
 load_dotenv()
 #from google import genai
 
 app = Flask(__name__)
-app.config['SESSION_TYPE'] = 'redis'
+app.config['SESSION_TYPE'] = 'filesystem'
 app.config['SESSION_PERMANENT'] = False
 app.config['SESSION_USE_SIGNER'] = True
 app.config['SESSION_KEY_PREFIX'] = 'myapp:'
-app.config['SESSION_REDIS'] = redis.StrictRedis(host='localhost', port=6379, db=0)
+#app.config['SESSION_REDIS'] = redis.StrictRedis(host='localhost', port=6379, db=0)
+app.config['SESSION_FILE_DIR'] = './flask_session_files'
 Session(app)
 
 socketio = SocketIO(app, cors_allowed_origins="*")
