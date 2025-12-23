@@ -18,4 +18,4 @@ flask-session
 langchain==0.1.12
 langchain-openai==0.0.8
 python-dotenv
-
+Flask-Session
