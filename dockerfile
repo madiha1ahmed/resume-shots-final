@@ -18,12 +18,4 @@ ENV FLASK_APP=app.py
 ENV PYTHONUNBUFFERED=1
 
 # Run the Flask app using gunicorn
-CMD ["gunicorn",
-     "app:app",
-     "--bind", "0.0.0.0:8000",
-     "--workers", "1",
-     "--threads", "1",
-     "--timeout", "180",
-     "--graceful-timeout", "30",
-     "--access-logfile", "-",
-     "--error-logfile", "-"]
+CMD ["gunicorn", "app:app", "--bind=0.0.0.0:8000", "--workers=1", "--threads=1", "--timeout=180", "--graceful-timeout=30", "--access-logfile=-", "--error-logfile=-"]
