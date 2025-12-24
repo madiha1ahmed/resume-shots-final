@@ -15,7 +15,7 @@ EXPOSE 8000
 
 # Define environment variable
 ENV FLASK_APP=app.py
-ENV PYTHONUNBUFFERED=1  # ensures prints flush immediately to logs
+ENV PYTHONUNBUFFERED=1
 
 # Run the Flask app using gunicorn
 CMD ["gunicorn",
