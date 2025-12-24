@@ -15,8 +15,15 @@ EXPOSE 8000
 
 # Define environment variable
 ENV FLASK_APP=app.py
+ENV PYTHONUNBUFFERED=1  # ensures prints flush immediately to logs
 
 # Run the Flask app using gunicorn
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
-#CMD gunicorn -w 1 -k eventlet -b 0.0.0.0:8000 app:app --timeout 120
-
+CMD ["gunicorn",
+     "app:app",
+     "--bind", "0.0.0.0:8000",
+     "--workers", "1",
+     "--threads", "1",
+     "--timeout", "180",
+     "--graceful-timeout", "30",
+     "--access-logfile", "-",
+     "--error-logfile", "-"]
