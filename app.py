@@ -503,6 +503,27 @@ def send_email():
     return jsonify({"success": True, "redirect_url": "/success"})
 
 
+from flask import jsonify
+
+@app.route("/test_openai")
+def test_openai():
+    print("🧪 /test_openai hit")
+    try:
+        from openai import OpenAI
+        client = OpenAI()  # will use OPENAI_API_KEY from env
+
+        resp = client.chat.completions.create(
+            model="gpt-4o",  # or your actual model
+            messages=[{"role": "user", "content": "Say 'ok' only."}],
+            max_tokens=5,
+            timeout=20,  # very strict, just for test
+        )
+        msg = resp.choices[0].message.content
+        print("🧪 OpenAI test response:", msg)
+        return jsonify({"status": "success", "reply": msg})
+    except Exception as e:
+        print("❌ OpenAI test error:", repr(e))
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
 @app.route('/success')
