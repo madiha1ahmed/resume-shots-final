@@ -92,7 +92,7 @@ def fetch_website_info(website_url):
 
 # Generate AI-based cover letter
 def generate_cover_letter(company_name, job_position, job_description, website_info, resume_text):
-    print(f"🚀 Starting cover letter for {company_name} - {job_position}")
+    #print(f"🚀 Starting cover letter for {company_name} - {job_position}")
     """
     Generates a professional and truthful cover letter based strictly on resume details.
     """
@@ -183,7 +183,7 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
         "website_info_integration": website_section,
         })
 
-        print(f"✅ Finished cover letter for {company_name} - {job_position}")
+        #print(f"✅ Finished cover letter for {company_name} - {job_position}")
 
         return response.content
     
