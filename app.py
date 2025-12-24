@@ -21,6 +21,9 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 #from google import genai
+import os
+
+print("🔧 OPENAI_API_KEY present?:", bool(os.getenv("OPENAI_API_KEY")))
 
 app = Flask(__name__)
 app.config['SESSION_TYPE'] = 'filesystem'
