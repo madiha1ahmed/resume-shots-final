@@ -545,6 +545,19 @@ def home():
 def view_resume(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
+@app.route('/job_status/<job_id>')
+def job_status(job_id):
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify({"success": False, "message": "Job not found"}), 404
+
+    return jsonify({
+        "success": True,
+        "status": job["status"],
+        "progress": job["progress"],
+        "total": job["total"],
+        "error": job["error"],
+    })
 
 
 
