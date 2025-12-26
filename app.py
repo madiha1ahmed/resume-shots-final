@@ -486,10 +486,11 @@ def review_emails(job_id):
 
     emails_data = job["emails_data"]
 
-    # Also put in session so send_email keeps working as before
+    # Also put in session so send_email works as before
     session['emails_data'] = emails_data
 
     return render_template('review.html', emails_data=emails_data, job_id=job_id)
+
 
 
  # "dclo ewei hyrg ltar"
