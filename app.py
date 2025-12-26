@@ -105,7 +105,11 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
     """
     Generates a professional and truthful cover letter based strictly on resume details.
     """
-    llm_provider = session.get('llm_provider', 'openai')  # Default to OpenAI if not set
+    #llm_provider = session.get('llm_provider', 'openai')  # Default to OpenAI if not set
+    # use the passed-in provider, default if None
+    if not llm_provider:
+        llm_provider = "openai"
+    
     llm = initialize_llm(llm_provider)
 
     # Ensure that website information is included properly if available
