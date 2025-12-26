@@ -426,7 +426,7 @@ def process_cover_letter_job(job_id, email_path, resume_paths, llm_provider):
         JOBS[job_id]["error"] = str(e)
 
 
-@app.route('/generate_cover_letters', methods=['POST'])
+@app.route('/generate_cover_letters', methods=['GET', 'POST'])
 def generate_cover_letters():
     """
     Starts a background job and returns a job_id immediately.
