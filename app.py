@@ -274,7 +274,10 @@ def is_relevant_resume(job_description, resume_text):
     Determines if the resume is relevant to the job description by checking domain-specific skills.
     If the job description contains IT-related skills, and the resume has overlapping skills, it is considered relevant.
     """
-    llm = initialize_llm(session.get('llm_provider', 'openai'))
+    #llm = initialize_llm(session.get('llm_provider', 'openai'))
+
+    if not llm_provider:
+        llm_provider = "openai"
 
     prompt = f"""
     You are a strict hiring assistant.
@@ -317,7 +320,12 @@ def select_best_resume(job_description, resume_texts):
     Uses LLM to select the most relevant resume for the given job description.
     No pre-filtering, purely prompt-based selection.
     """
-    llm_provider = session.get('llm_provider', 'openai')
+    
+    #llm_provider = session.get('llm_provider', 'openai')
+    if not llm_provider:
+        llm_provider = "openai"
+
+    
     llm = initialize_llm(llm_provider)
 
     # Ensure there are resumes to choose from
@@ -389,7 +397,7 @@ def process_cover_letter_job(job_id, email_path, resume_paths, llm_provider):
             company_website = row.get('Website', '')
 
             # Pick best resume for this job
-            best_resume_filename = select_best_resume(job_description, resume_texts)
+            best_resume_filename = select_best_resume(job_description, resume_texts, llm_provider)
             print(f"🔍 Selected Resume for {job_position}: {best_resume_filename}")
 
             best_resume_text = resume_texts.get(best_resume_filename, "")
@@ -403,7 +411,8 @@ def process_cover_letter_job(job_id, email_path, resume_paths, llm_provider):
                 job_position,
                 job_description,
                 website_info,
-                best_resume_text
+                best_resume_text,
+                llm_provider
             )
 
             emails_data.append({
