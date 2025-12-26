@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Upload Files</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.3.2/socket.io.js"></script>
+    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.3.2/socket.io.js"></script> -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script> <!-- jQuery for AJAX -->
 </head>
 <body>
@@ -45,66 +45,114 @@
         <button id="generateBtn" class="btn btn-success mt-3" onclick="startGeneration()" disabled>Generate Cover Letters</button>
     </div>
 
-    <script>
-        var socket = io.connect('http://' + document.domain + ':' + location.port);
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 
-        $("#uploadForm").submit(function(event) {
-            event.preventDefault(); // Prevent full page reload
+<script>
+    $("#uploadForm").submit(function(event) {
+        event.preventDefault(); // Prevent full page reload
 
-            var formData = new FormData(this);
+        var formData = new FormData(this);
 
-            $.ajax({
-                url: "/", 
-                type: "POST",
-                data: formData,
-                processData: false,
-                contentType: false,
-                success: function(response) {
-                    alert("✅ Files uploaded successfully! Now select an LLM provider.");
-                    $("#llm_provider").prop("disabled", false); // Enable dropdown
-                },
-                error: function(xhr, status, error) {
-                    alert("❌ Error uploading files: " + error);
-                }
-            });
-        });
-
-        // Enable "Generate Cover Letters" button only when an LLM is selected
-        $("#llm_provider").change(function() {
-            alert("✅ LLM provider selected. Now click 'Generate Cover Letters'.");
-            $("#generateBtn").prop("disabled", false);
-        });
-
-        function startGeneration() {
-            $("#generateBtn").prop("disabled", true);
-            $("#progressBar").css("width", "0%").text("0%");
-
-            $.ajax({
-                url: "/generate_cover_letters",
-                type: "GET",
-                success: function(response) {
-                    if (response.success) {
-                        console.log("✅ Cover letter generation started...");
-                    } else {
-                        alert("❌ Error: " + response.error);
-                    }
-                },
-                error: function(xhr, status, error) {
-                    alert("❌ Error starting generation: " + error);
-                }
-            });
-        }
-
-        socket.on('progress', function(data) {
-            $("#progressBar").css("width", data.progress + "%").text(data.progress + "%");
-
-            if (data.progress >= 100) {
-                setTimeout(function() {
-                    console.log("✅ Cover letters done. Redirecting to review...");
-                    window.location.href = "/review";  // ✅ Redirect after progress reaches 100%
-                }, 1500);  // Small delay for better user experience
+        $.ajax({
+            url: "/", 
+            type: "POST",
+            data: formData,
+            processData: false,
+            contentType: false,
+            success: function(response) {
+                alert("✅ Files uploaded successfully! Now select an LLM provider.");
+                $("#llm_provider").prop("disabled", false); // Enable dropdown
+            },
+            error: function(xhr, status, error) {
+                alert("❌ Error uploading files: " + error);
             }
         });
-    </script>
+    });
+
+    // Enable "Generate Cover Letters" button only when an LLM is selected
+    $("#llm_provider").change(function() {
+        alert("✅ LLM provider selected. Now click 'Generate Cover Letters'.");
+        $("#generateBtn").prop("disabled", false);
+    });
+
+    function startGeneration() {
+        $("#generateBtn").prop("disabled", true);
+        $("#progressBar").css("width", "0%").text("0%");
+
+        const provider = $("#llm_provider").val();
+        if (!provider) {
+            alert("Please select an LLM provider first.");
+            $("#generateBtn").prop("disabled", false);
+            return;
+        }
+
+        // 1) Start the job
+        $.ajax({
+            url: "/generate_cover_letters?llm_provider=" + encodeURIComponent(provider),
+            type: "GET",
+            success: function(response) {
+                if (response.success) {
+                    const jobId = response.job_id;
+                    console.log("✅ Cover letter generation started, job_id =", jobId);
+
+                    // 2) Poll job status every 3 seconds
+                    const intervalId = setInterval(function() {
+                        $.ajax({
+                            url: "/job_status/" + jobId,
+                            type: "GET",
+                            success: function(statusResp) {
+                                if (!statusResp.success) {
+                                    console.error("Status error:", statusResp.message);
+                                    clearInterval(intervalId);
+                                    alert("❌ Error checking job status: " + (statusResp.message || "Unknown error"));
+                                    return;
+                                }
+
+                                const status = statusResp.status;
+                                const progress = statusResp.progress || 0;
+                                const total = statusResp.total || 0;
+
+                                let percent = 0;
+                                if (total > 0) {
+                                    percent = Math.round((progress / total) * 100);
+                                }
+
+                                $("#progressBar")
+                                    .css("width", percent + "%")
+                                    .text(percent + "%");
+
+                                if (status === "done") {
+                                    clearInterval(intervalId);
+                                    console.log("✅ Job finished, redirecting to review...");
+                                    setTimeout(function() {
+                                        window.location.href = "/review/" + jobId;
+                                    }, 1500);
+                                } else if (status === "error") {
+                                    clearInterval(intervalId);
+                                    console.error("Job error:", statusResp.error);
+                                    alert("❌ Job failed: " + (statusResp.error || "Unknown error"));
+                                }
+                            },
+                            error: function(xhr, st, err) {
+                                clearInterval(intervalId);
+                                console.error("AJAX error while checking status:", err);
+                                alert("❌ Error while checking status: " + err);
+                            }
+                        });
+                    }, 3000);
+
+                } else {
+                    alert("❌ Error starting generation: " + (response.message || response.error || "Unknown error"));
+                    $("#generateBtn").prop("disabled", false);
+                }
+            },
+            error: function(xhr, status, error) {
+                alert("❌ Error starting generation: " + error);
+                $("#generateBtn").prop("disabled", false);
+            }
+        });
+    }
+</script>
+
 </body>
 </html>
