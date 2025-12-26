@@ -462,19 +462,7 @@ def generate_cover_letters():
     # Return immediately – frontend will poll /job_status/<job_id>
     return jsonify({"success": True, "job_id": job_id})
 
-@app.route('/job_status/<job_id>')
-def job_status(job_id):
-    job = JOBS.get(job_id)
-    if not job:
-        return jsonify({"success": False, "message": "Job not found"}), 404
 
-    return jsonify({
-        "success": True,
-        "status": job["status"],      # "queued" | "running" | "done" | "error"
-        "progress": job["progress"],  # number of rows processed
-        "total": job["total"],        # total rows
-        "error": job["error"],
-    })
 
 
 @app.route('/review/<job_id>', methods=['GET'])
@@ -607,11 +595,12 @@ def job_status(job_id):
 
     return jsonify({
         "success": True,
-        "status": job["status"],
-        "progress": job["progress"],
-        "total": job["total"],
+        "status": job["status"],      # "queued" | "running" | "done" | "error"
+        "progress": job["progress"],  # rows processed
+        "total": job["total"],        # total rows
         "error": job["error"],
     })
+
 
 
 
