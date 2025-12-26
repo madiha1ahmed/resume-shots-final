@@ -23,6 +23,12 @@ load_dotenv()
 #from google import genai
 import os
 
+from threading import Thread
+import uuid
+
+JOBS = {}  # job_id -> {"status": ..., "progress": ..., "total": ..., "emails_data": [], "error": None}
+
+
 print("🔧 OPENAI_API_KEY present?:", bool(os.getenv("OPENAI_API_KEY")))
 
 app = Flask(__name__)
