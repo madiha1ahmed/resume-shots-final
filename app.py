@@ -422,18 +422,22 @@ def generate_cover_letters():
     return jsonify({"success": True, "redirect_url": "/review"})
 
 
-@app.route('/review', methods=['GET', 'POST'])
-def review_emails():
-    emails_data = session.get('emails_data')
-
-    if not emails_data:
+@app.route('/review/<job_id>', methods=['GET'])
+def review_emails(job_id):
+    job = JOBS.get(job_id)
+    if not job or job["status"] != "done":
         return redirect(url_for('upload_files'))
+
+    emails_data = job["emails_data"]
 
     for email in emails_data:
         if 'job_description' not in email:
             email['job_description'] = "No job description available."
 
-    return render_template('review.html', emails_data=emails_data)
+    # Optionally: store in session so /send_email keeps working
+    session['emails_data'] = emails_data
+
+    return render_template('review.html', emails_data=emails_data, job_id=job_id)
 
 
 
