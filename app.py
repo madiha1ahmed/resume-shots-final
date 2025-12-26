@@ -351,75 +351,130 @@ def select_best_resume(job_description, resume_texts):
         print(f"❌ Resume selection error: {e}")
         return None
 
+def process_cover_letter_job(job_id, email_path, resume_paths, llm_provider):
+    """
+    Background worker: reads the Excel, picks resumes, calls LLM,
+    and fills JOBS[job_id]["emails_data"].
+    """
+    try:
+        # Load Excel/CSV
+        df = pd.read_excel(email_path) if email_path.endswith('.xlsx') else pd.read_csv(email_path)
+        total_jobs = len(df)
+
+        # Load resume texts from JSON
+        try:
+            with open("resume_texts.json", "r") as f:
+                resume_texts = json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading resume texts: {e}")
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = f"Error loading resume texts: {e}"
+            return
+
+        emails_data = []
+
+        JOBS[job_id]["total"] = total_jobs
+        JOBS[job_id]["status"] = "running"
+        JOBS[job_id]["progress"] = 0
+
+        for index, row in df.iterrows():
+            company_name = row['Company Name']
+            job_position = row['Job Position']
+            job_description = row.get('Job Description', '').strip()
+            recipient_email = row['Email']
+            company_website = row.get('Website', '')
+
+            # Pick best resume for this job
+            best_resume_filename = select_best_resume(job_description, resume_texts)
+            print(f"🔍 Selected Resume for {job_position}: {best_resume_filename}")
+
+            best_resume_text = resume_texts.get(best_resume_filename, "")
+
+            # Optional website info
+            website_info = fetch_website_info(company_website) if company_website else None
+
+            # Generate cover letter
+            cover_letter = generate_cover_letter(
+                company_name,
+                job_position,
+                job_description,
+                website_info,
+                best_resume_text
+            )
+
+            emails_data.append({
+                'recipient_email': recipient_email,
+                'company_name': company_name,
+                'job_position': job_position,
+                'job_description': job_description or "No job description available.",
+                'selected_resume': best_resume_filename,
+                'cover_letter': cover_letter
+            })
+
+            # Update progress
+            JOBS[job_id]["progress"] = index + 1
+
+        JOBS[job_id]["emails_data"] = emails_data
+        JOBS[job_id]["status"] = "done"
+        JOBS[job_id]["error"] = None
+
+        print(f"✅ Job {job_id} completed with {len(emails_data)} emails.")
+
+    except Exception as e:
+        print(f"❌ Unexpected error in job {job_id}: {e}")
+        JOBS[job_id]["status"] = "error"
+        JOBS[job_id]["error"] = str(e)
 
 
-@app.route('/generate_cover_letters')
+@app.route('/generate_cover_letters', methods=['POST'])
 def generate_cover_letters():
+    """
+    Starts a background job and returns a job_id immediately.
+    The heavy work is done in process_cover_letter_job.
+    """
     email_path = session.get('email_path')
-    #resume_texts = session.get('resume_texts', {})  # ✅ Supports multiple resumes
     resume_paths = session.get('resume_paths', {})
-    llm_provider = session.get('llm_provider', 'openai')  # Default to OpenAI
+    llm_provider = session.get('llm_provider', 'openai')
 
     if not email_path or not resume_paths:
-        return redirect(url_for('upload_files'))
+        return jsonify({"success": False, "message": "Please upload Excel and resumes first."}), 400
 
-    df = pd.read_excel(email_path) if email_path.endswith('.xlsx') else pd.read_csv(email_path)
+    # Create a new job id
+    job_id = str(uuid.uuid4())
 
-    # Load resume texts from file
-    # Load resume texts from file
-    try:
-        with open("resume_texts.json", "r") as f:
-            resume_texts = json.load(f)
-        print("✅ Loaded resume texts:", resume_texts.keys())  # Debugging print
-    except Exception as e:
-        print(f"❌ Error loading resume texts: {e}")
-        resume_texts = {}
+    # Initialize job state
+    JOBS[job_id] = {
+        "status": "queued",
+        "progress": 0,
+        "total": 0,
+        "emails_data": [],
+        "error": None,
+    }
 
+    # Start a background thread to process this job
+    t = Thread(
+        target=process_cover_letter_job,
+        args=(job_id, email_path, resume_paths, llm_provider),
+        daemon=True
+    )
+    t.start()
 
-    #resume_text = extract_text_from_pdf(resume_path)
+    # Return immediately – frontend will poll /job_status/<job_id>
+    return jsonify({"success": True, "job_id": job_id})
 
-    emails_data = []
-    total_jobs = len(df)
+@app.route('/job_status/<job_id>')
+def job_status(job_id):
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify({"success": False, "message": "Job not found"}), 404
 
-    for index, row in df.iterrows():
-        company_name = row['Company Name']
-        job_position = row['Job Position']
-        job_description = row.get('Job Description', '').strip()
-        recipient_email = row['Email']
-        company_website = row.get('Website', '')
-
-        # ✅ Select the best resume for this job
-        best_resume_filename = select_best_resume(job_description, resume_texts)
-        print(f"🔍 Selected Resume for {job_position}: {best_resume_filename}")  # Debugging print
-
-        best_resume_text = resume_texts.get(best_resume_filename, "")
-
-        # Generate Cover Letter using selected resume
-        #cover_letter = generate_cover_letter(company_name, job_position, job_description, best_resume_text)
-
-
-        print(f"Extracted Job Description [{index}]: {job_description}")
-
-        website_info = fetch_website_info(company_website) if company_website else None
-
-        cover_letter = generate_cover_letter(company_name, job_position, job_description, website_info, best_resume_text)
-
-        emails_data.append({
-            'recipient_email': recipient_email,
-            'company_name': company_name,
-            'job_position': job_position,
-            'job_description': job_description,
-            'selected_resume': best_resume_filename,
-            'cover_letter': cover_letter
-        })
-
-        # Send progress updates to front-end
-        progress = int((index + 1) / total_jobs * 100)
-        socketio.emit('progress', {'progress': progress})
-        time.sleep(1)  # Simulate slight delay for progress bar animation
-
-    session['emails_data'] = emails_data
-    return jsonify({"success": True, "redirect_url": "/review"})
+    return jsonify({
+        "success": True,
+        "status": job["status"],      # "queued" | "running" | "done" | "error"
+        "progress": job["progress"],  # number of rows processed
+        "total": job["total"],        # total rows
+        "error": job["error"],
+    })
 
 
 @app.route('/review/<job_id>', methods=['GET'])
@@ -430,15 +485,10 @@ def review_emails(job_id):
 
     emails_data = job["emails_data"]
 
-    for email in emails_data:
-        if 'job_description' not in email:
-            email['job_description'] = "No job description available."
-
-    # Optionally: store in session so /send_email keeps working
+    # Also put in session so send_email keeps working as before
     session['emails_data'] = emails_data
 
     return render_template('review.html', emails_data=emails_data, job_id=job_id)
-
 
 
  # "dclo ewei hyrg ltar"
