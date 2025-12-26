@@ -315,7 +315,7 @@ def is_relevant_resume(job_description, resume_text):
 
 
 
-def select_best_resume(job_description, resume_texts):
+def select_best_resume(job_description, resume_texts, llm_provider):
     """
     Uses LLM to select the most relevant resume for the given job description.
     No pre-filtering, purely prompt-based selection.
