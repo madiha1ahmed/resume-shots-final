@@ -111,19 +111,21 @@ def google_auth():
 
 @app.route("/oauth2callback/google")
 def google_oauth_callback():
-    """Handle Google OAuth callback and store credentials in session."""
     flow = create_google_flow()
 
-     # Fix scheme because we're behind a reverse proxy (Koyeb)
+    # Koyeb terminates HTTPS and calls our app over HTTP,
+    # but oauthlib requires the callback URL to be https.
     auth_response = request.url
     if auth_response.startswith("http://"):
         auth_response = auth_response.replace("http://", "https://", 1)
 
-    flow.fetch_token(authorization_response=request.url)
+    # You can temporarily log it if you want to confirm:
+    # print("Auth response URL used for fetch_token:", auth_response)
+
+    flow.fetch_token(authorization_response=auth_response)
 
     creds = flow.credentials
 
-    # Store minimal required fields in session
     session["google_creds"] = {
         "token": creds.token,
         "refresh_token": creds.refresh_token,
@@ -133,7 +135,6 @@ def google_oauth_callback():
         "scopes": creds.scopes,
     }
 
-    # After login, send user to upload page
     return redirect(url_for("upload_files"))
 
 
