@@ -12,7 +12,9 @@
     <div class="container mt-5">
         <h2 class="text-center">Upload Resume & Email List</h2>
 
-        <form id="uploadForm" enctype="multipart/form-data">
+        <form id="uploadForm" method="post" enctype="multipart/form-data"
+      action="{{ url_for('upload_files') }}">
+
             <div class="mb-3">
                 <label class="form-label">Upload Excel/CSV File</label>
                 <input type="file" class="form-control" name="email_file" id="email_file" required>
