@@ -113,6 +113,12 @@ def google_auth():
 def google_oauth_callback():
     """Handle Google OAuth callback and store credentials in session."""
     flow = create_google_flow()
+
+     # Fix scheme because we're behind a reverse proxy (Koyeb)
+    auth_response = request.url
+    if auth_response.startswith("http://"):
+        auth_response = auth_response.replace("http://", "https://", 1)
+
     flow.fetch_token(authorization_response=request.url)
 
     creds = flow.credentials
