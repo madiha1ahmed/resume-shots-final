@@ -26,26 +26,22 @@
         </p>
 
         {% if not google_connected %}
-            <!-- Show this BEFORE login -->
-            <p class="mt-4 mb-2"><strong>Step 1:</strong> Connect your Google account to continue.</p>
-            <a href="{{ url_for('google_auth') }}" class="btn btn-danger btn-lg">
-                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg"
-                     alt="Google logo" style="height: 24px; margin-right: 8px;">
-                Connect with Google
-            </a>
+    <p class="mt-4 mb-2"><strong>Step 1:</strong> Connect your Google account to continue.</p>
+    <a href="{{ url_for('google_auth') }}" class="btn btn-danger btn-lg">
+        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg"
+             alt="Google logo" style="height: 24px; margin-right: 8px;">
+        Connect with Google
+    </a>
+    <p class="text-muted mt-3">
+        We use your Google account only to send applications on your behalf. Your password is never shared with us.
+    </p>
+{% else %}
+    <p class="mt-3 text-success">
+        ✅ Google connected. You can now start using Resume-Shots.
+    </p>
+    <a href="{{ url_for('upload_files') }}" class="btn btn-primary btn-lg">Get Started 🚀</a>
+{% endif %}
 
-            <p class="text-muted mt-3">
-                We use Google only to send emails on your behalf. We never see your password.
-            </p>
-        {% else %}
-            <!-- Show this AFTER login -->
-            <p class="mt-3 text-success">
-                ✅ Google connected. You can now start using Resume-Shots.
-            </p>
-            <a href="{{ url_for('upload_files') }}" class="btn btn-primary btn-lg">
-                Get Started 🚀
-            </a>
-        {% endif %}
     </div>
 
     <footer class="text-center mt-5 py-3 bg-light">
