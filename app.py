@@ -64,8 +64,8 @@ GOOGLE_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
 def create_google_flow():
     """Create an OAuth Flow object for Google login."""
-    return Flow(
-        client_config={
+    return Flow.from_client_config(
+        {
             "web": {
                 "client_id": GOOGLE_CLIENT_ID,
                 "client_secret": GOOGLE_CLIENT_SECRET,
@@ -76,6 +76,7 @@ def create_google_flow():
         scopes=GOOGLE_SCOPES,
         redirect_uri=GOOGLE_REDIRECT_URI,
     )
+
 
 def get_google_creds():
     """Reconstruct Credentials object from session (if user is logged in)."""
