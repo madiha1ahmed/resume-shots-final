@@ -314,8 +314,16 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
 
 import json
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/upload', methods=['GET', 'POST'])
 def upload_files():
+
+    # 🔒 Require Google login
+    if "google_creds" not in session:
+        return redirect(url_for('home'))
+
+    if request.method == 'POST':
+        session.clear()   # careful: this will also clear google_creds
+        
     if request.method == 'POST':
         session.clear()
 
