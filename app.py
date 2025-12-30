@@ -22,6 +22,10 @@ from dotenv import load_dotenv
 load_dotenv()
 #from google import genai
 import os
+from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
 
 from threading import Thread
 import uuid
@@ -47,10 +51,92 @@ app.config['SECRET_KEY'] = 'your_secret_key'
 # Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
+
+
 # Initialize OpenAI LLM
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") 
 #client = genai.Client(api_key="AIzaSyDz3IIqX2E74NaYnXK3CmnKRBOCZekOa8A")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5000/oauth2callback/google")
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+
+def create_google_flow():
+    """Create an OAuth Flow object for Google login."""
+    return Flow(
+        client_config={
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=GOOGLE_SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI,
+    )
+
+def get_google_creds():
+    """Reconstruct Credentials object from session (if user is logged in)."""
+    data = session.get("google_creds")
+    if not data:
+        return None
+
+    return Credentials(
+        token=data["token"],
+        refresh_token=data.get("refresh_token"),
+        token_uri=data["token_uri"],
+        client_id=data["client_id"],
+        client_secret=data["client_secret"],
+        scopes=data["scopes"],
+    )
+
+@app.route("/auth/google")
+def google_auth():
+    """Start Google OAuth login."""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return "Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.", 500
+
+    flow = create_google_flow()
+    authorization_url, state = flow.authorization_url(
+        access_type="offline",            # so we get refresh_token
+        include_granted_scopes="true",
+        prompt="consent",                 # ensures refresh_token first time
+    )
+    session["oauth_state"] = state
+    return redirect(authorization_url)
+
+
+@app.route("/oauth2callback/google")
+def google_oauth_callback():
+    """Handle Google OAuth callback and store credentials in session."""
+    flow = create_google_flow()
+    flow.fetch_token(authorization_response=request.url)
+
+    creds = flow.credentials
+
+    # Store minimal required fields in session
+    session["google_creds"] = {
+        "token": creds.token,
+        "refresh_token": creds.refresh_token,
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": creds.scopes,
+    }
+
+    # After login, send user to upload page
+    return redirect(url_for("upload_files"))
+
+
+@app.route("/logout")
+def logout():
+    """Simple logout: clear session and send back to home."""
+    session.clear()
+    return redirect(url_for("home"))
+
+
 
 def initialize_llm(llm_provider):
     if llm_provider == "deepseek":
@@ -587,6 +673,10 @@ def test_openai():
         print("❌ OpenAI test error:", repr(e))
         return jsonify({"status": "error", "error": str(e)}), 500
 
+@app.route('/')
+def root():
+    return redirect(url_for('home'))
+
 
 @app.route('/success')
 def success():
@@ -595,7 +685,8 @@ def success():
 
 @app.route('/home')
 def home():
-    return render_template('home.html')
+    google_connected = "google_creds" in session
+    return render_template('home.html', google_connected=google_connected)
 
 @app.route('/view_resume/<filename>')
 def view_resume(filename):
