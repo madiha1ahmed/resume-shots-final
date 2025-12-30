@@ -499,8 +499,8 @@ from flask import Flask, render_template, request, redirect, url_for, session, j
 
 @app.route('/send_email', methods=['POST'])
 def send_email():
-    sender_email = "madiha1ahmed@gmail.com"
-    sender_password = "uxim fruv ijqv hwdi"  # Use a Gmail app password
+    sender_email = "meerahmed@gmail.com"
+    sender_password = "oevh akcf tfyp mmzf"  # Use a Gmail app password
     smtp_server = "smtp.gmail.com"
     smtp_port = 587
 
