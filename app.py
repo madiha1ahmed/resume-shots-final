@@ -322,10 +322,10 @@ def upload_files():
         return redirect(url_for('home'))
 
     if request.method == 'POST':
-        session.clear()   # careful: this will also clear google_creds
-        
-    if request.method == 'POST':
-        session.clear()
+        # Instead of session.clear(), selectively remove only upload-related keys
+        for key in ["email_path", "resume_paths", "emails_data"]:
+            session.pop(key, None)
+
 
         if 'email_file' not in request.files or 'resume_files' not in request.files:
             return jsonify({"error": "Missing files"}), 400
