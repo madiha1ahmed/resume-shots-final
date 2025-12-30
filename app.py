@@ -59,7 +59,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 #client = genai.Client(api_key="AIzaSyDz3IIqX2E74NaYnXK3CmnKRBOCZekOa8A")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5000/oauth2callback/google")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "https://resumeshots.mesaki.in/oauth2callback/google")
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
 def create_google_flow():
