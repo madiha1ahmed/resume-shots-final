@@ -56,7 +56,7 @@
         var formData = new FormData(this);
 
         $.ajax({
-            url: "/", 
+            url: "{{ url_for('upload_files') }}", 
             type: "POST",
             data: formData,
             processData: false,
