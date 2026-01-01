@@ -27,6 +27,9 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import base64
 from google.auth.transport.requests import Request
+import re
+from urllib.parse import urlparse
+
 
 
 
@@ -79,6 +82,90 @@ def create_google_flow():
         scopes=GOOGLE_SCOPES,
         redirect_uri=GOOGLE_REDIRECT_URI,
     )
+
+def extract_job_info_from_url(url):
+    """
+    Best-effort extraction of job info from a job posting URL.
+    Returns a dict with keys matching your Excel columns:
+    Email, Company Name, Job Position, Job Description, Website
+    """
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/119.0 Safari/537.36"
+            )
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            print(f"❌ Failed to fetch {url}, status {resp.status_code}")
+            raise RuntimeError(f"HTTP {resp.status_code}")
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # ---- Email (recruiter/contact) ----
+        recruiter_email = None
+
+        mailto = soup.select_one("a[href^=mailto]")
+        if mailto and mailto.get("href"):
+            recruiter_email = (
+                mailto["href"].split("mailto:")[-1].split("?")[0].strip()
+            )
+
+        if not recruiter_email:
+            text = soup.get_text(" ", strip=True)
+            m = re.search(
+                r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text
+            )
+            if m:
+                recruiter_email = m.group(0)
+
+        # ---- Job title / position ----
+        job_position = ""
+        h1 = soup.find("h1")
+        if h1 and h1.get_text(strip=True):
+            job_position = h1.get_text(strip=True)
+        elif soup.title and soup.title.string:
+            job_position = soup.title.string.strip()
+
+        # ---- Company website & name from domain ----
+        parsed = urlparse(url)
+        company_website = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else url
+        company_name = parsed.netloc.split(".")[0].replace("-", " ").title() if parsed.netloc else ""
+
+        # ---- Job description (first several paragraphs) ----
+        description_parts = []
+        for p in soup.find_all("p"):
+            txt = p.get_text(" ", strip=True)
+            if txt:
+                description_parts.append(txt)
+            if len(" ".join(description_parts)) > 1500:
+                break
+
+        job_description = " ".join(description_parts)[:4000]
+
+        # Fallback if extraction was too empty
+        if not job_description:
+            job_description = f"Job details could not be auto-extracted. Please review manually.\nURL: {url}"
+
+        return {
+            "Email": recruiter_email or "",
+            "Company Name": company_name or "",
+            "Job Position": job_position or "",
+            "Job Description": job_description,
+            "Website": company_website,
+        }
+
+    except Exception as e:
+        print(f"❌ Error extracting info from {url}: {e}")
+        return {
+            "Email": "",
+            "Company Name": "",
+            "Job Position": "",
+            "Job Description": f"Could not auto-extract details. Please fill manually.\nURL: {url}",
+            "Website": url,
+        }
 
 
 def get_google_creds():
@@ -139,6 +226,61 @@ def google_oauth_callback():
     }
 
     return redirect(url_for("upload_files"))
+@app.route("/build_excel", methods=["GET", "POST"])
+def build_excel():
+    # Require Google login as well
+    if "google_creds" not in session:
+        return redirect(url_for("home"))
+
+    if request.method == "POST":
+        links_text = request.form.get("job_links", "").strip()
+        if not links_text:
+            return render_template(
+                "build_excel.html",
+                error="Please paste at least one job link.",
+            )
+
+        urls = [line.strip() for line in links_text.splitlines() if line.strip()]
+        if not urls:
+            return render_template(
+                "build_excel.html",
+                error="No valid job links found.",
+            )
+
+        rows = []
+        for url in urls:
+            info = extract_job_info_from_url(url)
+            info["Source URL"] = url  # optional extra column, for reference
+            rows.append(info)
+
+        df = pd.DataFrame(rows)
+        filename = f"jobs_{int(time.time())}.xlsx"
+        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        df.to_excel(filepath, index=False)
+
+        # Save so we know what to offer for download
+        session["built_excel_filename"] = filename
+
+        download_url = url_for("download_built_excel")
+        return render_template(
+            "build_excel_done.html",
+            download_url=download_url,
+        )
+
+    # GET
+    return render_template("build_excel.html")
+
+@app.route("/download_built_excel")
+def download_built_excel():
+    filename = session.get("built_excel_filename")
+    if not filename:
+        return redirect(url_for("build_excel"))
+
+    return send_from_directory(
+        app.config["UPLOAD_FOLDER"],
+        filename,
+        as_attachment=True,
+    )
 
 
 @app.route("/logout")
