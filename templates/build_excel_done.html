@@ -27,13 +27,11 @@
 
 <script>
 document.getElementById("downloadBtn").addEventListener("click", function () {
-    // Trigger download in a hidden iframe so we can still redirect
     const iframe = document.createElement("iframe");
     iframe.style.display = "none";
     iframe.src = "{{ download_url }}";
     document.body.appendChild(iframe);
 
-    // Redirect shortly after
     setTimeout(function () {
         window.location.href = "{{ url_for('upload_files') }}";
     }, 1500);
