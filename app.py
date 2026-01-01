@@ -3,7 +3,7 @@ import os
 from flask import Flask, session
 from flask_session import Session
 import pandas as pd
-import smtplib
+#import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -25,6 +25,9 @@ import os
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+import base64
+from google.auth.transport.requests import Request
+
 
 
 from threading import Thread
@@ -79,7 +82,6 @@ def create_google_flow():
 
 
 def get_google_creds():
-    """Reconstruct Credentials object from session (if user is logged in)."""
     data = session.get("google_creds")
     if not data:
         return None
@@ -92,6 +94,7 @@ def get_google_creds():
         client_secret=data["client_secret"],
         scopes=data["scopes"],
     )
+
 
 @app.route("/auth/google")
 def google_auth():
@@ -599,72 +602,112 @@ def review_emails(job_id):
 
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 
+def send_message_via_gmail_api(creds, to_email, subject, body_text, attachment_path=None, bcc_email=None):
+    """Send a single email with optional attachment using Gmail API."""
+    # Refresh if needed
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        # put refreshed token back into session
+        stored = session.get("google_creds", {})
+        stored["token"] = creds.token
+        session["google_creds"] = stored
+
+    service = build("gmail", "v1", credentials=creds)
+
+    # Get the authenticated user's email address
+    profile = service.users().getProfile(userId="me").execute()
+    sender_email = profile.get("emailAddress")
+
+    msg = MIMEMultipart()
+    msg["From"] = sender_email
+    msg["To"] = to_email
+    if bcc_email:
+        msg["Bcc"] = bcc_email
+    msg["Subject"] = subject
+
+    # Body
+    msg.attach(MIMEText(body_text, "plain"))
+
+    # Attachment (resume)
+    if attachment_path:
+        with open(attachment_path, "rb") as resume_file:
+            attach_file = MIMEBase("application", "octet-stream")
+            attach_file.set_payload(resume_file.read())
+            encoders.encode_base64(attach_file)
+            attach_file.add_header(
+                "Content-Disposition",
+                f'attachment; filename="{os.path.basename(attachment_path)}"',
+            )
+            msg.attach(attach_file)
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+    body = {"raw": raw}
+
+    return service.users().messages().send(userId="me", body=body).execute()
+
+
 @app.route('/send_email', methods=['POST'])
 def send_email():
-    sender_email = "meerahmed@gmail.com"
-    sender_password = "oevh akcf tfyp mmzf"  # Use a Gmail app password
-    smtp_server = "smtp.gmail.com"
-    smtp_port = 587
+    # 1) Get Google OAuth credentials
+    creds = get_google_creds()
+    if not creds:
+        return jsonify({
+            "success": False,
+            "message": "Google account not connected. Please go back to Home and click 'Connect with Google' first."
+        }), 401
 
     emails_data = session.get('emails_data', [])
-    resume_paths = session.get('resume_paths', {})  # ✅ Now using stored resume paths
+    resume_paths = session.get('resume_paths', {})
 
-    approved_indexes = request.form.getlist("approve_")  # Get checked indexes
+    approved_indexes = request.form.getlist("approve_")  # Get checked indexes (1-based)
     print("✅ Approved indexes:", approved_indexes)
 
-    filtered_emails = [emails_data[int(i) - 1] for i in approved_indexes]
-    print(f"✅ {len(filtered_emails)} emails to be sent.")
-
-    if not filtered_emails:
+    if not approved_indexes:
         print("❌ No emails selected for sending!")
         return jsonify({"success": False, "message": "No emails were selected!"})
 
+    # Build list of approved emails
+    filtered_emails = [emails_data[int(i) - 1] for i in approved_indexes]
+    print(f"✅ {len(filtered_emails)} emails to be sent.")
+
+    # Apply any edited cover letters from the form
     for i, email in enumerate(filtered_emails):
-        edited_cover_letter = request.form.get(f"cover_letter_{int(approved_indexes[i])}")
+        form_index = int(approved_indexes[i])
+        edited_cover_letter = request.form.get(f"cover_letter_{form_index}")
         if edited_cover_letter:
             email["cover_letter"] = edited_cover_letter.strip()
 
     try:
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        print("✅ Successfully logged into SMTP server.")
-
+        # Optional: BCC to yourself (the logged-in Google account)
+        # We'll fetch it inside send_message_via_gmail_api, so just pass None here
         for email in filtered_emails:
-            msg = MIMEMultipart()
-            msg['From'] = sender_email
-            msg['To'] = email['recipient_email']
-            msg['Bcc'] = sender_email  # ✅ Adds sender in BCC
-            msg['Subject'] = f"Job Application for {email['job_position']}"
-
-            msg.attach(MIMEText(email['cover_letter'], 'plain'))
-
-            # ✅ Retrieve the correct resume path
-            resume_filename = email.get("selected_resume")  # The selected resume filename
-            resume_path = resume_paths.get(resume_filename)  # Get actual path from stored resumes
+            resume_filename = email.get("selected_resume")
+            resume_path = resume_paths.get(resume_filename)
 
             if not resume_path:
                 print(f"❌ Resume path not found for {resume_filename}")
                 continue  # Skip this email if resume is missing
 
-            with open(resume_path, 'rb') as resume_file:
-                attach_file = MIMEBase('application', 'octet-stream')
-                attach_file.set_payload(resume_file.read())
-                encoders.encode_base64(attach_file)
-                attach_file.add_header('Content-Disposition', f'attachment; filename={os.path.basename(resume_path)}')
-                msg.attach(attach_file)
+            subject = f"Job Application for {email['job_position']}"
+            body_text = email["cover_letter"]
 
-            server.send_message(msg)
+            send_message_via_gmail_api(
+                creds=creds,
+                to_email=email["recipient_email"],
+                subject=subject,
+                body_text=body_text,
+                attachment_path=resume_path,
+                bcc_email=None  # or set to a fixed address if you like
+            )
+
             print(f"✅ Email sent to {email['recipient_email']} for {email['job_position']}")
-
-        server.quit()
-        print("✅ SMTP server connection closed.")
 
     except Exception as e:
         print(f"❌ Failed to send emails. Error: {e}")
         return jsonify({"success": False, "message": f"Error: {e}"})
 
     return jsonify({"success": True, "redirect_url": "/success"})
+
 
 
 from flask import jsonify
