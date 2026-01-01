@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Build Excel from Job Links</title>
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body>
+<div class="container mt-5">
+    <h2 class="mb-3 text-center">Build Excel File from Job Links</h2>
+    <p class="lead">
+        Paste one or more job posting URLs below (one per line).<br>
+        We'll try to extract:
+        <strong>Email, Company Name, Job Position, Job Description, Company Website</strong>
+        and generate an Excel file for you.
+    </p>
+
+    {% if error %}
+        <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
+    <form method="post">
+        <div class="mb-3">
+            <label for="job_links" class="form-label">Job links (one per line)</label>
+            <textarea class="form-control" id="job_links" name="job_links"
+                      rows="8" placeholder="https://example.com/job-1
+https://example.com/job-2"></textarea>
+        </div>
+
+        <button type="submit" class="btn btn-primary">
+            Build Excel File
+        </button>
+        <a href="{{ url_for('upload_files') }}" class="btn btn-secondary ms-2">
+            Back to Upload
+        </a>
+    </form>
+</div>
+</body>
+</html>
