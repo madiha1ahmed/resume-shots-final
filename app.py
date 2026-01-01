@@ -29,6 +29,11 @@ import base64
 from google.auth.transport.requests import Request
 import re
 from urllib.parse import urlparse
+import base64
+import json
+import time
+#from urllib.parse import urlparse  # (optional, but fine to keep)
+
 
 
 
@@ -226,49 +231,49 @@ def google_oauth_callback():
     }
 
     return redirect(url_for("upload_files"))
-@app.route("/build_excel", methods=["GET", "POST"])
+    
+@app.route("/build_excel", methods=["GET"])
 def build_excel():
-    # Require Google login as well
+    if "google_creds" not in session:
+        return redirect(url_for("home"))
+    return render_template("build_excel.html")
+
+@app.route("/build_excel/manual", methods=["POST"])
+def build_excel_manual():
     if "google_creds" not in session:
         return redirect(url_for("home"))
 
-    if request.method == "POST":
-        links_text = request.form.get("job_links", "").strip()
-        if not links_text:
-            return render_template(
-                "build_excel.html",
-                error="Please paste at least one job link.",
-            )
+    emails = request.form.getlist("email[]")
+    companies = request.form.getlist("company[]")
+    positions = request.form.getlist("position[]")
+    descriptions = request.form.getlist("description[]")
+    websites = request.form.getlist("website[]")
 
-        urls = [line.strip() for line in links_text.splitlines() if line.strip()]
-        if not urls:
-            return render_template(
-                "build_excel.html",
-                error="No valid job links found.",
-            )
+    rows = []
+    for i in range(len(companies)):
+        # Skip completely empty rows
+        if not (emails[i] or companies[i] or positions[i] or descriptions[i] or websites[i]):
+            continue
+        rows.append({
+            "Email": emails[i],
+            "Company Name": companies[i],
+            "Job Position": positions[i],
+            "Job Description": descriptions[i],
+            "Website": websites[i],
+        })
 
-        rows = []
-        for url in urls:
-            info = extract_job_info_from_url(url)
-            info["Source URL"] = url  # optional extra column, for reference
-            rows.append(info)
+    if not rows:
+        return render_template("build_excel.html", error="Please add at least one non-empty row.")
 
-        df = pd.DataFrame(rows)
-        filename = f"jobs_{int(time.time())}.xlsx"
-        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-        df.to_excel(filepath, index=False)
+    df = pd.DataFrame(rows)
+    filename = f"jobs_{int(time.time())}.xlsx"
+    filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    df.to_excel(filepath, index=False)
 
-        # Save so we know what to offer for download
-        session["built_excel_filename"] = filename
+    session["built_excel_filename"] = filename
+    download_url = url_for("download_built_excel")
+    return render_template("build_excel_done.html", download_url=download_url)
 
-        download_url = url_for("download_built_excel")
-        return render_template(
-            "build_excel_done.html",
-            download_url=download_url,
-        )
-
-    # GET
-    return render_template("build_excel.html")
 
 @app.route("/download_built_excel")
 def download_built_excel():
@@ -281,6 +286,65 @@ def download_built_excel():
         filename,
         as_attachment=True,
     )
+
+@app.route("/build_excel/ai", methods=["POST"])
+def build_excel_ai():
+    if "google_creds" not in session:
+        return jsonify({"success": False, "message": "Not logged in"}), 401
+
+    job_text = request.form.get("job_text", "").strip()
+    if not job_text:
+        return jsonify({"success": False, "message": "Please paste a job description."}), 400
+
+    llm_provider = session.get("llm_provider", "openai")
+    llm = initialize_llm(llm_provider)
+
+    prompt = f"""
+You are an assistant that extracts structured data from job descriptions.
+
+From the job description below, extract:
+- recruiter_email: the main contact email (or "" if none)
+- company_name: the company advertising the role (guess from text if needed)
+- job_position: the job title
+- job_description: a concise but complete cleaned text version
+- website: the company's main website URL if mentioned, else "".
+
+Return ONLY valid JSON, no markdown, in this exact format:
+
+{{
+  "recruiter_email": "...",
+  "company_name": "...",
+  "job_position": "...",
+  "job_description": "...",
+  "website": "..."
+}}
+
+Job description:
+\"\"\"{job_text}\"\"\"
+"""
+
+    try:
+        result = llm.invoke(prompt)
+        raw = result.content if hasattr(result, "content") else str(result)
+        data = json.loads(raw)
+
+        row = {
+            "Email": data.get("recruiter_email", ""),
+            "Company Name": data.get("company_name", ""),
+            "Job Position": data.get("job_position", ""),
+            "Job Description": data.get("job_description", ""),
+            "Website": data.get("website", ""),
+        }
+
+        return jsonify({"success": True, "row": row})
+
+    except Exception as e:
+        print("❌ AI extraction error:", e)
+        return jsonify({
+            "success": False,
+            "message": "AI could not parse the job description. Please try again or fill manually."
+        }), 500
+
 
 
 @app.route("/logout")
