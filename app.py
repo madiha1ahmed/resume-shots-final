@@ -614,12 +614,13 @@ def send_message_via_gmail_api(creds, to_email, subject, body_text, attachment_p
 
     service = build("gmail", "v1", credentials=creds)
 
-    # Get the authenticated user's email address
-    profile = service.users().getProfile(userId="me").execute()
-    sender_email = profile.get("emailAddress")
+    # ⚠️ REMOVE the profile call – no extra scopes needed
+    # profile = service.users().getProfile(userId="me").execute()
+    # sender_email = profile.get("emailAddress")
 
     msg = MIMEMultipart()
-    msg["From"] = sender_email
+    # "From" is optional; Gmail will set it to the authenticated user automatically
+    # msg["From"] = sender_email  # <- remove or comment out
     msg["To"] = to_email
     if bcc_email:
         msg["Bcc"] = bcc_email
@@ -644,6 +645,7 @@ def send_message_via_gmail_api(creds, to_email, subject, body_text, attachment_p
     body = {"raw": raw}
 
     return service.users().messages().send(userId="me", body=body).execute()
+
 
 
 @app.route('/send_email', methods=['POST'])
