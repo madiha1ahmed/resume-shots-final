@@ -1,0 +1,36 @@
+# ---- Secrets: NEVER commit these ----
+.env
+.env.*
+*.env
+client_secret*.json
+*credentials*.json
+token.json
+token.pickle
+
+# ---- Python ----
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---- Flask / app runtime data ----
+flask_session/
+instance/
+*.log
+
+# ---- User-uploaded & generated files (adjust to your folder names) ----
+uploads/
+resumes/
+generated/
+resume_texts.json
+*.xlsx
+*.pdf
+
+# ---- OS / editor junk ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/flask_session_files/

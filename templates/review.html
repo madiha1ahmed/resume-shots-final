@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Review & Send — One Row at a Time</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        .provider-card { border: 2px solid #dee2e6; border-radius: 10px; height: 100%; transition: border-color .15s, box-shadow .15s; }
+        .provider-card.selected { border-color: #198754; box-shadow: 0 0 0 .2rem rgba(25,135,84,.15); }
+        .provider-head { cursor: pointer; display: flex; align-items: center; gap: .5rem; padding: .6rem .8rem; border-bottom: 1px solid #eee; font-weight: 600; }
+        .provider-head .badge-err { font-size: .7rem; }
+        .letter-text { width: 100%; border: none; padding: .8rem; resize: vertical; min-height: 320px; font-size: .92rem; line-height: 1.4; border-radius: 0 0 10px 10px; }
+        .letter-text:focus { outline: 2px solid #86b7fe; }
+        .meta-card { background: #f8f9fa; border-radius: 10px; padding: 1rem 1.25rem; }
+        .row-panel { display: none; }
+        .row-panel.active { display: block; }
+        .sent-toast { position: fixed; top: 20px; right: 20px; z-index: 1080; }
+    </style>
+</head>
+<body>
+<div class="container-fluid px-4 mt-4" style="max-width: 1400px;">
+
+    <h2 class="text-center">Review & Send</h2>
+    <p class="text-center text-muted mb-1">
+        Each row shows all AI-generated letters side by side. Pick the one you like,
+        edit if needed, then send — the next row appears automatically.
+    </p>
+
+    <!-- Progress -->
+    <div class="d-flex align-items-center gap-3 my-3">
+        <div class="progress flex-grow-1" style="height: 24px;">
+            <div id="reviewProgress" class="progress-bar bg-success" style="width: 0%;">0%</div>
+        </div>
+        <span id="rowCounter" class="fw-bold text-nowrap"></span>
+    </div>
+
+    {% set colw = 12 // (providers|length) if providers|length else 12 %}
+
+    {% for email in emails_data %}
+    {% set row_i = loop.index %}
+    <div class="row-panel {% if loop.first %}active{% endif %}" id="panel-{{ row_i }}" data-index="{{ row_i }}">
+
+        <!-- Row metadata -->
+        <div class="meta-card mb-3">
+            <div class="row">
+                <div class="col-md-3"><small class="text-muted d-block">Company / Institution</small><strong>{{ email.company_name }}</strong></div>
+                <div class="col-md-3"><small class="text-muted d-block">Position / Workshop</small><strong>{{ email.job_position }}</strong></div>
+                <div class="col-md-3"><small class="text-muted d-block">Recipient</small><strong>{{ email.recipient_email }}</strong></div>
+                <div class="col-md-3">
+                    <small class="text-muted d-block">Resume &nbsp;·&nbsp; Details</small>
+                    <a href="{{ url_for('view_resume', filename=email.selected_resume) }}" target="_blank">{{ email.selected_resume }}</a>
+                    &nbsp;|&nbsp;
+                    <a href="#" onclick="showJobDescription(`{{ email.job_description|safe }}`); return false;">Job Description</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Side-by-side letters -->
+        <div class="row g-3">
+            {% for p in providers %}
+            <div class="col-md-{{ colw }}">
+                <div class="provider-card" id="card-{{ row_i }}-{{ p }}">
+                    <label class="provider-head" for="radio-{{ row_i }}-{{ p }}">
+                        <input class="form-check-input mt-0 choice-{{ row_i }}" type="radio"
+                               name="choice_{{ row_i }}" id="radio-{{ row_i }}-{{ p }}"
+                               value="{{ p }}" {% if loop.first %}checked{% endif %}
+                               onchange="selectCard({{ row_i }}, '{{ p }}')">
+                        <span>{{ provider_labels.get(p, p) }}</span>
+                        {% if email.cover_letters.get(p, '').startswith('[') %}
+                        <span class="badge bg-danger badge-err ms-auto">error</span>
+                        {% endif %}
+                    </label>
+                    <textarea class="letter-text" id="text_{{ row_i }}_{{ p }}">{{ email.cover_letters.get(p, '') }}</textarea>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- Actions -->
+        <div class="d-flex gap-2 my-4">
+            <button class="btn btn-success btn-lg" id="sendBtn-{{ row_i }}" onclick="sendRow({{ row_i }})">
+                ✅ Send selected & continue
+            </button>
+            <button class="btn btn-outline-secondary btn-lg" onclick="skipRow({{ row_i }})">
+                Skip this row
+            </button>
+        </div>
+    </div>
+    {% endfor %}
+
+    <!-- Done panel -->
+    <div class="row-panel text-center py-5" id="donePanel">
+        <h3 class="mb-3">🎉 All rows reviewed</h3>
+        <p class="text-muted">You've gone through every row in the sheet.</p>
+        <a href="{{ url_for('home') }}" class="btn btn-primary mt-2">Back to Home</a>
+    </div>
+</div>
+
+<!-- Sent toast -->
+<div class="sent-toast">
+    <div id="sentToast" class="alert alert-success shadow d-none mb-0">✅ Email sent!</div>
+</div>
+
+<!-- Job Description Modal -->
+<div class="modal fade" id="jobDescModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Job / Workshop Description</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <pre id="jobDescContent" style="white-space: pre-wrap; word-wrap: break-word;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const TOTAL = {{ emails_data|length }};
+    let current = 1;
+
+    function updateProgress() {
+        // rows completed = current - 1 (rows already sent/skipped)
+        const done = Math.min(current - 1, TOTAL);
+        const pct = TOTAL ? Math.round((done / TOTAL) * 100) : 100;
+        const bar = document.getElementById("reviewProgress");
+        bar.style.width = pct + "%";
+        bar.textContent = pct + "%";
+        document.getElementById("rowCounter").textContent =
+            current > TOTAL ? "Done" : ("Row " + current + " of " + TOTAL);
+    }
+
+    function showRow(i) {
+        document.querySelectorAll(".row-panel").forEach(p => p.classList.remove("active"));
+        if (i > TOTAL) {
+            document.getElementById("donePanel").classList.add("active");
+        } else {
+            const panel = document.getElementById("panel-" + i);
+            if (panel) panel.classList.add("active");
+            // reflect the currently-checked radio as selected card
+            const checked = panel.querySelector('input[name="choice_' + i + '"]:checked');
+            if (checked) selectCard(i, checked.value);
+        }
+        current = i;
+        updateProgress();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function selectCard(rowI, provider) {
+        document.querySelectorAll('[id^="card-' + rowI + '-"]').forEach(c => c.classList.remove("selected"));
+        const card = document.getElementById("card-" + rowI + "-" + provider);
+        if (card) card.classList.add("selected");
+    }
+
+    function advance(fromRow) { showRow(fromRow + 1); }
+
+    function skipRow(rowI) { advance(rowI); }
+
+    function toast() {
+        const t = document.getElementById("sentToast");
+        t.classList.remove("d-none");
+        setTimeout(() => t.classList.add("d-none"), 1800);
+    }
+
+    function sendRow(rowI) {
+        const panel = document.getElementById("panel-" + rowI);
+        const checked = panel.querySelector('input[name="choice_' + rowI + '"]:checked');
+        if (!checked) { alert("Please pick one letter to send."); return; }
+
+        const provider = checked.value;
+        const text = document.getElementById("text_" + rowI + "_" + provider).value;
+
+        const btn = document.getElementById("sendBtn-" + rowI);
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "Sending…";
+
+        const fd = new FormData();
+        fd.append("provider", provider);
+        fd.append("approve_", rowI);              // single approved row (1-based)
+        fd.append("cover_letter_" + rowI, text);  // edited text for this row
+
+        $.ajax({
+            url: "/send_email",
+            type: "POST",
+            data: fd,
+            processData: false,
+            contentType: false,
+            success: function (response) {
+                btn.disabled = false;
+                btn.textContent = original;
+                if (response.success) {
+                    toast();
+                    advance(rowI);
+                } else {
+                    alert(response.message || "Could not send this email.");
+                    if (response.reconnect) {
+                        window.location.href = "{{ url_for('home') }}";
+                    }
+                }
+            },
+            error: function (xhr, status, error) {
+                btn.disabled = false;
+                btn.textContent = original;
+                alert("❌ Error sending: " + error);
+            }
+        });
+    }
+
+    function showJobDescription(description) {
+        document.getElementById("jobDescContent").textContent =
+            (description && description.trim()) ? description : "No job description available.";
+        new bootstrap.Modal(document.getElementById("jobDescModal")).show();
+    }
+
+    // init
+    document.addEventListener("DOMContentLoaded", function () {
+        if (TOTAL === 0) { showRow(1); } else { showRow(1); }
+    });
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

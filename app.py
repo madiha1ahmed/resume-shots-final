@@ -1,0 +1,1177 @@
+from flask import Flask, render_template, request, redirect, url_for, session, send_from_directory, jsonify
+import os
+from flask import Flask, session
+from flask_session import Session
+import pandas as pd
+#import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+import pdfplumber
+from langchain_openai import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate
+from langchain.chains import LLMChain
+from datetime import datetime
+import requests
+from bs4 import BeautifulSoup
+from flask_socketio import SocketIO
+import time
+#import redis
+from dotenv import load_dotenv
+load_dotenv()
+#from google import genai
+import os
+from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+import base64
+from google.auth.transport.requests import Request
+import re
+from urllib.parse import urlparse
+import base64
+import json
+import time
+#from urllib.parse import urlparse  # (optional, but fine to keep)
+
+
+
+
+
+from threading import Thread
+import uuid
+
+JOBS = {}  # job_id -> {"status": ..., "progress": ..., "total": ..., "emails_data": [], "error": None}
+
+
+print("🔧 OPENAI_API_KEY present?:", bool(os.getenv("OPENAI_API_KEY")))
+
+app = Flask(__name__)
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['SESSION_PERMANENT'] = False
+app.config['SESSION_USE_SIGNER'] = True
+app.config['SESSION_KEY_PREFIX'] = 'myapp:'
+#app.config['SESSION_REDIS'] = redis.StrictRedis(host='localhost', port=6379, db=0)
+app.config['SESSION_FILE_DIR'] = './flask_session_files'
+Session(app)
+
+socketio = SocketIO(app, cors_allowed_origins="*")
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['SECRET_KEY'] = 'your_secret_key'
+
+# Ensure upload folder exists
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+
+
+# Initialize OpenAI LLM
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") 
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") 
+#client = genai.Client(api_key="AIzaSyDz3IIqX2E74NaYnXK3CmnKRBOCZekOa8A")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "https://resumeshots.mesaki.in/oauth2callback/google")
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+
+def create_google_flow():
+    """Create an OAuth Flow object for Google login."""
+    return Flow.from_client_config(
+        {
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=GOOGLE_SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI,
+    )
+
+def extract_job_info_from_url(url):
+    """
+    Best-effort extraction of job info from a job posting URL.
+    Returns a dict with keys matching your Excel columns:
+    Email, Company Name, Job Position, Job Description, Website
+    """
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/119.0 Safari/537.36"
+            )
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            print(f"❌ Failed to fetch {url}, status {resp.status_code}")
+            raise RuntimeError(f"HTTP {resp.status_code}")
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # ---- Email (recruiter/contact) ----
+        recruiter_email = None
+
+        mailto = soup.select_one("a[href^=mailto]")
+        if mailto and mailto.get("href"):
+            recruiter_email = (
+                mailto["href"].split("mailto:")[-1].split("?")[0].strip()
+            )
+
+        if not recruiter_email:
+            text = soup.get_text(" ", strip=True)
+            m = re.search(
+                r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text
+            )
+            if m:
+                recruiter_email = m.group(0)
+
+        # ---- Job title / position ----
+        job_position = ""
+        h1 = soup.find("h1")
+        if h1 and h1.get_text(strip=True):
+            job_position = h1.get_text(strip=True)
+        elif soup.title and soup.title.string:
+            job_position = soup.title.string.strip()
+
+        # ---- Company website & name from domain ----
+        parsed = urlparse(url)
+        company_website = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else url
+        company_name = parsed.netloc.split(".")[0].replace("-", " ").title() if parsed.netloc else ""
+
+        # ---- Job description (first several paragraphs) ----
+        description_parts = []
+        for p in soup.find_all("p"):
+            txt = p.get_text(" ", strip=True)
+            if txt:
+                description_parts.append(txt)
+            if len(" ".join(description_parts)) > 1500:
+                break
+
+        job_description = " ".join(description_parts)[:4000]
+
+        # Fallback if extraction was too empty
+        if not job_description:
+            job_description = f"Job details could not be auto-extracted. Please review manually.\nURL: {url}"
+
+        return {
+            "Email": recruiter_email or "",
+            "Company Name": company_name or "",
+            "Job Position": job_position or "",
+            "Job Description": job_description,
+            "Website": company_website,
+        }
+
+    except Exception as e:
+        print(f"❌ Error extracting info from {url}: {e}")
+        return {
+            "Email": "",
+            "Company Name": "",
+            "Job Position": "",
+            "Job Description": f"Could not auto-extract details. Please fill manually.\nURL: {url}",
+            "Website": url,
+        }
+
+
+def get_google_creds():
+    data = session.get("google_creds")
+    if not data:
+        return None
+
+    return Credentials(
+        token=data["token"],
+        refresh_token=data.get("refresh_token"),
+        token_uri=data["token_uri"],
+        client_id=data["client_id"],
+        client_secret=data["client_secret"],
+        scopes=data["scopes"],
+    )
+
+
+@app.route("/auth/google")
+def google_auth():
+    """Start Google OAuth login."""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return "Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.", 500
+
+    flow = create_google_flow()
+    authorization_url, state = flow.authorization_url(
+        access_type="offline",            # so we get refresh_token
+        include_granted_scopes="true",
+        prompt="consent",                 # ensures refresh_token first time
+    )
+    session["oauth_state"] = state
+    # PKCE: authorization_url() generated a one-time code_verifier on this flow.
+    # Save it so the callback (a fresh flow object) can complete the token exchange.
+    session["code_verifier"] = flow.code_verifier
+    return redirect(authorization_url)
+
+
+@app.route("/oauth2callback/google")
+def google_oauth_callback():
+    flow = create_google_flow()
+
+    # PKCE: restore the code_verifier that was generated when login started.
+    # Without this, Google's token endpoint rejects the code ("Missing code verifier").
+    flow.code_verifier = session.get("code_verifier")
+
+    # Koyeb terminates HTTPS and calls our app over HTTP,
+    # but oauthlib requires the callback URL to be https.
+    # (Locally over plain http://localhost this rewrite is still fine because only
+    #  the ?code=/?state= query params are read from this URL.)
+    auth_response = request.url
+    if auth_response.startswith("http://"):
+        auth_response = auth_response.replace("http://", "https://", 1)
+
+    # You can temporarily log it if you want to confirm:
+    # print("Auth response URL used for fetch_token:", auth_response)
+
+    flow.fetch_token(authorization_response=auth_response)
+
+    creds = flow.credentials
+
+    session["google_creds"] = {
+        "token": creds.token,
+        "refresh_token": creds.refresh_token,
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": creds.scopes,
+    }
+
+    return redirect(url_for("upload_files"))
+    
+@app.route("/build_excel", methods=["GET"])
+def build_excel():
+    if "google_creds" not in session:
+        return redirect(url_for("home"))
+    return render_template("build_excel.html")
+
+@app.route("/build_excel/manual", methods=["POST"])
+def build_excel_manual():
+    if "google_creds" not in session:
+        return redirect(url_for("home"))
+
+    emails = request.form.getlist("email[]")
+    companies = request.form.getlist("company[]")
+    positions = request.form.getlist("position[]")
+    descriptions = request.form.getlist("description[]")
+    websites = request.form.getlist("website[]")
+
+    rows = []
+    for i in range(len(companies)):
+        # Skip completely empty rows
+        if not (emails[i] or companies[i] or positions[i] or descriptions[i] or websites[i]):
+            continue
+        rows.append({
+            "Email": emails[i],
+            "Company Name": companies[i],
+            "Job Position": positions[i],
+            "Job Description": descriptions[i],
+            "Website": websites[i],
+        })
+
+    if not rows:
+        return render_template("build_excel.html", error="Please add at least one non-empty row.")
+
+    df = pd.DataFrame(rows)
+    filename = f"jobs_{int(time.time())}.xlsx"
+    filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    df.to_excel(filepath, index=False)
+
+    session["built_excel_filename"] = filename
+    download_url = url_for("download_built_excel")
+    return render_template("build_excel_done.html", download_url=download_url)
+
+
+@app.route("/download_built_excel")
+def download_built_excel():
+    filename = session.get("built_excel_filename")
+    if not filename:
+        return redirect(url_for("build_excel"))
+
+    return send_from_directory(
+        app.config["UPLOAD_FOLDER"],
+        filename,
+        as_attachment=True,
+    )
+
+@app.route("/build_excel/ai", methods=["POST"])
+def build_excel_ai():
+    if "google_creds" not in session:
+        return jsonify({"success": False, "message": "Not logged in"}), 401
+
+    job_text = request.form.get("job_text", "").strip()
+    if not job_text:
+        return jsonify({"success": False, "message": "Please paste a job description."}), 400
+
+    llm_provider = session.get("llm_provider", "openai")
+    llm = initialize_llm(llm_provider)
+
+    prompt = f"""
+You are an assistant that extracts structured data from job descriptions.
+
+From the job description below, extract:
+- recruiter_email: the main contact email (or "" if none)
+- company_name: the company advertising the role (guess from text if needed)
+- job_position: the job title
+- job_description: a concise but complete cleaned text version
+- website: the company's main website URL if mentioned, else "".
+
+Return ONLY valid JSON, no markdown, in this exact format:
+
+{{
+  "recruiter_email": "...",
+  "company_name": "...",
+  "job_position": "...",
+  "job_description": "...",
+  "website": "..."
+}}
+
+Job description:
+\"\"\"{job_text}\"\"\"
+"""
+
+    try:
+        result = llm.invoke(prompt)
+        raw = result.content if hasattr(result, "content") else str(result)
+        data = json.loads(raw)
+
+        row = {
+            "Email": data.get("recruiter_email", ""),
+            "Company Name": data.get("company_name", ""),
+            "Job Position": data.get("job_position", ""),
+            "Job Description": data.get("job_description", ""),
+            "Website": data.get("website", ""),
+        }
+
+        return jsonify({"success": True, "row": row})
+
+    except Exception as e:
+        print("❌ AI extraction error:", e)
+        return jsonify({
+            "success": False,
+            "message": "AI could not parse the job description. Please try again or fill manually."
+        }), 500
+
+
+
+@app.route("/logout")
+def logout():
+    """Simple logout: clear session and send back to home."""
+    session.clear()
+    return redirect(url_for("home"))
+
+
+
+# Model IDs are configurable via .env so you can swap models without editing code.
+# (OpenRouter occasionally renames/retires model slugs — just update these if so.)
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek/deepseek-chat")
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+
+# --- Gemini: use Google's DIRECT API (OpenAI-compatible endpoint) when a key is set,
+#     otherwise fall back to routing through OpenRouter. ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # direct key from Google AI Studio
+GEMINI_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# Direct Google model name (bare, e.g. "gemini-2.0-flash"):
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# OpenRouter slug used only if no direct key is available:
+GEMINI_OPENROUTER_MODEL = os.getenv("GEMINI_OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
+
+def initialize_llm(llm_provider):
+    if llm_provider == "deepseek":
+        return ChatOpenAI(model=DEEPSEEK_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE, temperature=0)
+    elif llm_provider == 'gemini':
+        if GEMINI_API_KEY:
+            # Direct Google Gemini API via its OpenAI-compatible endpoint
+            return ChatOpenAI(model=GEMINI_MODEL, openai_api_key=GEMINI_API_KEY, openai_api_base=GEMINI_OPENAI_BASE, temperature=0)
+        # Fallback: route through OpenRouter
+        return ChatOpenAI(model=GEMINI_OPENROUTER_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE, temperature=0)
+    # Default to OpenAI
+    return ChatOpenAI(model=OPENAI_MODEL, openai_api_key=OPENAI_API_KEY, temperature=0)
+
+
+#llm = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY)
+
+# Extract text from resume
+
+def extract_text_from_pdf(pdf_path):
+    text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() + "\n" if page.extract_text() else ""
+    return text
+
+current_date = datetime.today().strftime('%B %d, %Y')
+
+def fetch_website_info(website_url):
+    """Fetches the main content of a company's website to personalize the cover letter."""
+    if not website_url or not website_url.startswith("http"):
+        return None  # Ensure the website URL is valid
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        response = requests.get(website_url, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
+            paragraphs = soup.find_all("p")
+            if paragraphs:
+                return paragraphs[0].get_text().strip()
+            headers = soup.find_all(["h1", "h2"])
+            if headers:
+                return headers[0].get_text().strip()
+
+    except requests.RequestException:
+        return None
+
+    return None
+
+# Generate AI-based cover letter
+def generate_cover_letter(company_name, job_position, job_description, website_info, resume_text, llm_provider, content_type="job_application"):
+    #print(f"🚀 Starting cover letter for {company_name} - {job_position}")
+    """
+    Generates a professional and truthful letter based strictly on resume details.
+
+    content_type controls how the letter is framed:
+      - "job_application"   -> a cover letter applying for a job (default / original behaviour)
+      - "workshop_promotion"-> a promotional outreach letter inviting a university/college
+                               to host or allow a workshop, NOT a job application.
+    """
+    #llm_provider = session.get('llm_provider', 'openai')  # Default to OpenAI if not set
+    # use the passed-in provider, default if None
+    if not llm_provider:
+        llm_provider = "openai"
+    
+    llm = initialize_llm(llm_provider)
+
+    # Ensure that website information is included properly if available
+    #website_section = (
+       # f"\nI reviewed the information available on {company_name}'s website and was particularly drawn to {website_info}. "
+        #if website_info and website_info.lower() != "no website available"
+        #else ""
+    #)
+
+    if website_info and website_info.strip():
+        website_section = f"I reviewed {company_name}'s website and was particularly drawn to {website_info}."
+    else:
+        website_section = ""  # Leave blank if no website info
+
+
+    # Get the current date
+    current_date = datetime.today().strftime('%B %d, %Y')
+
+    if content_type == "workshop_promotion":
+        # ----- WORKSHOP PROMOTION PROMPT -----
+        # Here the Excel columns are re-interpreted:
+        #   Company Name    -> University / College / Institution name
+        #   Job Position    -> Workshop title / topic (if provided)
+        #   Job Description  -> Any extra context about the institution or workshop
+        # The resume is treated as the presenter's / organizer's credentials.
+        prompt_text = f"""
+    You are an experienced academic-outreach and partnerships specialist. Your job is to write a
+    warm, professional, and genuinely persuasive **promotional email** that invites a university or
+    college to **host a workshop for their students**. You are OFFERING value to the institution —
+    you are NOT applying for a job, and the email must never read like a job or internship application.
+
+    ------------------------------------------------------------
+    INPUTS
+    ------------------------------------------------------------
+    - Today's date: {current_date}
+    - Target institution: {company_name}
+    - Workshop topic / title: {job_position}
+    - Extra context about the institution or workshop (may be empty): {job_description}
+
+    Presenter / organizer credentials (the ONLY source of facts about the sender):
+    {resume_text}
+
+    {website_section}
+
+    ------------------------------------------------------------
+    HOW TO INTERPRET THE INPUTS
+    ------------------------------------------------------------
+    - Treat "{company_name}" as the university/college/department you are writing TO.
+    - Treat "{job_position}" as the subject/title of the workshop being offered.
+    - Use the extra context above as supporting detail (e.g., department, audience, event) only if it is meaningful; ignore it if it is blank.
+    - Use the resume ONLY to establish the presenter's credibility — their real expertise, achievements, and background. Do NOT restate the resume like a CV or list every item in it.
+
+    ------------------------------------------------------------
+    WHAT THE EMAIL MUST DO (in order)
+    ------------------------------------------------------------
+    1. Address the institution or the relevant department respectfully (e.g., "Dear {company_name} Team," or a specific department if one clearly appears in the context).
+    2. Open with a clear, engaging reason for writing: you would like to offer a workshop on {job_position} for their students.
+    3. Establish credibility in ONE or TWO sentences, using only real and relevant expertise drawn from the resume (field of expertise, notable experience or results). Keep it humble and factual.
+    4. Explain the concrete VALUE to the students: the specific skills or knowledge they will gain, why it is relevant to their studies or future careers, and what makes the session practical or hands-on.
+    5. Mention, in general terms only, that the format is flexible (e.g., in-person or online, adaptable duration) and that you are happy to tailor it to their needs. Do NOT invent specific dates, fees, or logistics.
+    6. End with a clear, low-pressure call to action inviting them to connect to discuss dates, format, and logistics.
+    7. Close with a warm, professional sign-off using the presenter's real name, city/country, and phone number — but only those that actually appear in the resume.
+
+    ------------------------------------------------------------
+    TONE & STYLE
+    ------------------------------------------------------------
+    - Warm, confident, respectful, and student-focused — the voice of a knowledgeable professional offering a genuine opportunity, not a salesperson and not a job applicant.
+    - Persuasive but never pushy or exaggerated. Avoid hype and empty clichés (e.g., "world-class", "revolutionary", "passionate about") unless the resume clearly supports them.
+    - Concise and skimmable: two short paragraphs plus a greeting and sign-off, roughly 120–180 words.
+    - Personalize using the institution's website insights above when they are available, so the email feels tailored rather than mass-produced.
+
+    ------------------------------------------------------------
+    STRICT RULES
+    ------------------------------------------------------------
+    - This is a PROMOTIONAL / INVITATION email — NEVER frame it as applying for a job, role, or position.
+    - Do NOT fabricate any qualification, experience, credential, statistic, date, price, or logistical detail that is not present in the inputs.
+    - If a detail (name, phone, city) is missing from the resume, omit it gracefully. Never invent it and never leave a literal placeholder such as "[Name]" in the output.
+    - Do NOT include a subject line (the subject is added separately).
+    - Do NOT include LinkedIn or any social profiles.
+    - Return ONLY the finished email body, ready to send — no explanations, notes, headings, or markdown code fences.
+    """
+    else:
+        # ----- JOB APPLICATION PROMPT (original behaviour) -----
+        prompt_text = f"""
+    You are a **highly precise and fact-based** job application assistant. 
+    Your task is to generate a **truthful, concise, and professional** cover letter based **ONLY on the provided resume**.
+
+    **Candidate Details:**
+    - **Name:** [Name from {resume_text}]
+    - **Address:** [Address from {resume_text}]
+    - **Phone Number:** [Phone Number from {resume_text}]
+    - **Date:** {current_date}
+
+    **Job Application Details:**
+    - **Company:** {company_name}
+    - **Position:** {job_position}
+    - **Job Description:** {job_description}
+
+    **Candidate's Resume:**
+    {resume_text}
+
+    {website_section}
+
+    **STRICT RULES:**
+    - **DO NOT fabricate any experiences, degrees, or skills that are NOT present in the resume.**
+    - **Only extract relevant skills and qualifications from the resume text above.**
+    - **If a required skill is missing, acknowledge it politely and express eagerness to learn.**
+    - **No generic statements like "passionate about teaching" unless proven from the resume.**
+    - **If website insights are available, integrate them naturally.**
+    - **Do not include LinkedIn Profile in the cover letter**
+    - **No more than TWO paragraphs.**
+
+    **Example Cover Letter Structure:**
+    
+    Dear Hiring Team of {company_name},
+
+    I am excited to apply for the {job_position} role at {company_name}. My background in **[relevant expertise from {resume_text}]** has enabled me to **[explain how your experience aligns with job responsibilities]**. {website_section}
+
+    I look forward to the opportunity to discuss how my expertise in **[relevant experience in {resume_text}]** can contribute to **[company's goal or project mentioned in job description]**.
+
+    Sincerely,  
+    [Name from {resume_text}] 
+    [City, Country from Address in {resume_text}]
+    Phone: [Phone number from {resume_text}]
+    
+    """
+
+    # Runtime proof of which prompt was selected (visible in the server console).
+    mode_label = "WORKSHOP PROMOTION" if content_type == "workshop_promotion" else "JOB APPLICATION"
+    print(f"📝 [{mode_label}] provider={llm_provider} | {company_name} - {job_position}")
+
+    prompt = ChatPromptTemplate.from_template(prompt_text)
+
+    # Create an LLM Chain using LangChain
+    #chain = prompt | llm
+    #response = chain.invoke({
+        #"company_name": company_name,
+        #"job_position": job_position,
+        #"job_description": job_description,
+        #"resume_text": resume_text,  # Explicitly passing the extracted resume
+        #"website_info_integration": website_section,
+    #})
+
+    #return response.content  # Extract the generated cover letter
+
+    if llm_provider == "deepseek":
+        chain = prompt | llm
+
+    # Pass input variables to the model
+        response = chain.invoke({
+        "company_name": company_name,
+        "job_position": job_position,
+        "job_description": job_description,
+        "resume_text": resume_text,  # Explicitly passing the extracted resume
+        "website_info_integration": website_section,
+        })
+
+        #print(f"✅ Finished cover letter for {company_name} - {job_position}")
+
+        return response.content
+    
+    elif llm_provider == "gemini":
+        chain = prompt | llm
+
+    # Pass input variables to the model
+        response = chain.invoke({
+        "company_name": company_name,
+        "job_position": job_position,
+        "job_description": job_description,
+        "resume_text": resume_text,  # Explicitly passing the extracted resume
+        "website_info_integration": website_section,
+        })
+
+        return response.content
+    
+    else:
+        chain = prompt | llm
+        response = chain.invoke({
+        "company_name": company_name,
+        "job_position": job_position,
+        "job_description": job_description,
+        "resume_text": resume_text,  # Explicitly passing the extracted resume
+        "website_info_integration": website_section,
+    })
+        return response.content
+
+
+import json
+
+@app.route('/upload', methods=['GET', 'POST'])
+def upload_files():
+
+    # 🔒 Require Google login
+    if "google_creds" not in session:
+        return redirect(url_for('home'))
+
+    if request.method == 'POST':
+        # Instead of session.clear(), selectively remove only upload-related keys
+        for key in ["email_path", "resume_paths", "emails_data"]:
+            session.pop(key, None)
+
+
+        if 'email_file' not in request.files or 'resume_files' not in request.files:
+            return jsonify({"error": "Missing files"}), 400
+
+        email_file = request.files['email_file']
+        resume_files = request.files.getlist('resume_files')
+
+        if email_file.filename == "" or len(resume_files) == 0:
+            return jsonify({"error": "No files selected"}), 400
+
+        email_path = os.path.join(app.config['UPLOAD_FOLDER'], email_file.filename)
+        email_file.save(email_path)
+
+        resume_texts = {}
+        resume_paths = {}
+
+        for resume_file in resume_files:
+            if resume_file.filename == "":
+                continue  # Ignore empty filenames
+
+            resume_path = os.path.join(app.config['UPLOAD_FOLDER'], resume_file.filename)
+            resume_file.save(resume_path)
+
+            resume_texts[resume_file.filename] = extract_text_from_pdf(resume_path)
+            resume_paths[resume_file.filename] = resume_path
+
+        # Save resume texts to a JSON file instead of the session
+        with open("resume_texts.json", "w") as f:
+            json.dump(resume_texts, f)
+
+        session['email_path'] = email_path
+        session['resume_paths'] = resume_paths  # Keep only file paths in session
+
+        return jsonify({"success": True, "message": "Files uploaded successfully!"})
+
+    return render_template('upload.html')
+
+def is_relevant_resume(job_description, resume_text):
+    """
+    Determines if the resume is relevant to the job description by checking domain-specific skills.
+    If the job description contains IT-related skills, and the resume has overlapping skills, it is considered relevant.
+    """
+    #llm = initialize_llm(session.get('llm_provider', 'openai'))
+
+    if not llm_provider:
+        llm_provider = "openai"
+
+    prompt = f"""
+    You are a strict hiring assistant.
+
+    Your job is to determine if a **resume is relevant** for a given **job description** based on industry skills.
+    
+    **Instructions:**
+    - If the resume contains **relevant technical skills** (e.g., Python, SQL, Cloud Computing, AI, IT Security) for an IT-related job, it should be marked as "YES".
+    - If it is in a **completely different field** (e.g., receptionist for IT Manager), it should be marked as "NO".
+    - Consider **data engineers, software engineers, and AI researchers relevant for IT Management** roles if they have IT infrastructure knowledge.
+
+    **Examples:**
+    - Receptionist applying for IT Manager → "NO"
+    - Civil Engineer applying for Software Engineer → "NO"
+    - Data Scientist applying for AI Researcher → "YES"
+    - Data Engineer applying for IT Manager → "YES"
+    - Python Developer applying for IT Consultant → "YES"
+    - Doctor applying for Cybersecurity Analyst → "NO"
+
+    **Job Description:**
+    {job_description}
+
+    **Resume:**
+    {resume_text}  # Limiting token usage
+
+    Answer with only "YES" or "NO".
+    """
+
+    try:
+        result = llm.invoke(prompt).content.strip().upper()
+        return result == "YES"
+    except Exception as e:
+        print(f"❌ Filter error: {e}")
+        return False
+
+
+
+def select_best_resume(job_description, resume_texts, llm_provider):
+    """
+    Uses LLM to select the most relevant resume for the given job description.
+    No pre-filtering, purely prompt-based selection.
+    """
+    
+    #llm_provider = session.get('llm_provider', 'openai')
+    if not llm_provider:
+        llm_provider = "openai"
+
+    
+    llm = initialize_llm(llm_provider)
+
+    # Ensure there are resumes to choose from
+    if not resume_texts:
+        print("❌ No resumes available for selection.")
+        return None
+
+    # Generate the selection prompt
+    combined_prompt = f"""
+    You are an expert recruiter.
+
+    Your task is to select the **best and most closely (even remotely closest)** resume for a given job description.
+    Below are multiple resumes. Choose the **most relevant one** based on education, experience, skills, volunteering, interest and industry match.
+
+    **Job Description:**
+    {job_description}
+
+    **Available Resumes:**
+    {json.dumps(resume_texts, indent=2)}
+
+    **Important Instructions:**
+    - Choose the resume that **best aligns with the job description**.
+    - If multiple resumes match, select the most experienced candidate.
+    - **Do NOT fabricate or assume skills that are not present in the resume.**
+    - **Output should be ONLY the filename of the best resume. No explanations, no extra text.**
+
+    **Example Output Format:**
+    Resume-2025.pdf
+    """
+
+    try:
+        best_filename = llm.invoke(combined_prompt).content.strip()
+        return best_filename if best_filename in resume_texts else None
+    except Exception as e:
+        print(f"❌ Resume selection error: {e}")
+        return None
+
+# --- Providers we generate with, and the labels shown on the review tabs ---
+ALL_PROVIDERS = ["openai", "deepseek", "gemini"]
+PROVIDER_LABELS = {
+    "openai": "ChatGPT (GPT-4o)",
+    "deepseek": "DeepSeek-V3",
+    "gemini": "Gemini 2.0 Flash",
+}
+
+def get_active_providers():
+    """Return only the providers we can actually call, based on which keys are set."""
+    active = []
+    if OPENAI_API_KEY:
+        active.append("openai")
+    if OPENROUTER_API_KEY:
+        active.append("deepseek")
+    # Gemini works with either a direct Google key OR via OpenRouter.
+    if GEMINI_API_KEY or OPENROUTER_API_KEY:
+        active.append("gemini")
+    # If no keys were detected, fall back to all three (each will error on its own tab).
+    active = active or list(ALL_PROVIDERS)
+
+    # Optional: hide specific providers via .env, e.g. DISABLED_PROVIDERS=gemini
+    disabled = {p.strip().lower() for p in os.getenv("DISABLED_PROVIDERS", "").split(",") if p.strip()}
+    active = [p for p in active if p not in disabled]
+
+    return active or list(ALL_PROVIDERS)
+
+
+def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application"):
+    """
+    Background worker: reads the Excel, picks ONE resume per row, then generates a
+    letter with EVERY active provider so the user can compare them in tabs.
+    Fills JOBS[job_id]["emails_data"].
+    """
+    try:
+        # Load Excel/CSV
+        df = pd.read_excel(email_path) if email_path.endswith('.xlsx') else pd.read_csv(email_path)
+        total_jobs = len(df)
+
+        # Load resume texts from JSON
+        try:
+            with open("resume_texts.json", "r") as f:
+                resume_texts = json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading resume texts: {e}")
+            JOBS[job_id]["status"] = "error"
+            JOBS[job_id]["error"] = f"Error loading resume texts: {e}"
+            return
+
+        providers = get_active_providers()
+        # Provider used only for picking the resume (kept identical across all tabs).
+        selection_provider = providers[0]
+
+        emails_data = []
+
+        JOBS[job_id]["providers"] = providers
+        JOBS[job_id]["total"] = total_jobs * len(providers)
+        JOBS[job_id]["status"] = "running"
+        JOBS[job_id]["progress"] = 0
+
+        done_steps = 0
+        for index, row in df.iterrows():
+            company_name = row['Company Name']
+            job_position = row['Job Position']
+            job_description = str(row.get('Job Description', '') or '').strip()
+            recipient_email = row['Email']
+            company_website = row.get('Website', '')
+
+            # Pick ONE resume for this row; the same resume appears in every provider tab.
+            best_resume_filename = select_best_resume(job_description, resume_texts, selection_provider)
+            if not best_resume_filename and resume_texts:
+                best_resume_filename = next(iter(resume_texts))  # fallback: first resume
+            print(f"🔍 Selected Resume for {job_position}: {best_resume_filename}")
+
+            best_resume_text = resume_texts.get(best_resume_filename, "")
+
+            # Optional website info
+            website_info = fetch_website_info(company_website) if company_website else None
+
+            # Generate one letter per provider.
+            cover_letters = {}
+            for provider in providers:
+                try:
+                    cover_letters[provider] = generate_cover_letter(
+                        company_name,
+                        job_position,
+                        job_description,
+                        website_info,
+                        best_resume_text,
+                        provider,
+                        content_type
+                    )
+                except Exception as e:
+                    print(f"❌ {provider} failed for {job_position}: {e}")
+                    cover_letters[provider] = f"[{provider} could not generate this letter: {e}]"
+
+                done_steps += 1
+                JOBS[job_id]["progress"] = done_steps
+
+            emails_data.append({
+                'recipient_email': recipient_email,
+                'company_name': company_name,
+                'job_position': job_position,
+                'job_description': job_description or "No job description available.",
+                'selected_resume': best_resume_filename,
+                'content_type': content_type,
+                'cover_letters': cover_letters,
+            })
+
+        JOBS[job_id]["emails_data"] = emails_data
+        JOBS[job_id]["status"] = "done"
+        JOBS[job_id]["error"] = None
+
+        print(f"✅ Job {job_id} completed: {len(emails_data)} rows × {len(providers)} providers.")
+
+    except Exception as e:
+        print(f"❌ Unexpected error in job {job_id}: {e}")
+        JOBS[job_id]["status"] = "error"
+        JOBS[job_id]["error"] = str(e)
+
+
+@app.route('/generate_cover_letters', methods=['GET', 'POST'])
+def generate_cover_letters():
+    """
+    Starts a background job and returns a job_id immediately.
+    The heavy work is done in process_cover_letter_job.
+    """
+    email_path = session.get('email_path')
+    resume_paths = session.get('resume_paths', {})
+
+    # Only the content type matters now — we generate with all providers automatically.
+    content_type = request.args.get('content_type') or session.get('content_type', 'job_application')
+    session['content_type'] = content_type
+
+    if not email_path or not resume_paths:
+        return jsonify({"success": False, "message": "Please upload Excel and resumes first."}), 400
+
+    # Create a new job id
+    job_id = str(uuid.uuid4())
+
+    # Initialize job state
+    JOBS[job_id] = {
+        "status": "queued",
+        "progress": 0,
+        "total": 0,
+        "emails_data": [],
+        "providers": [],
+        "error": None,
+    }
+
+    # Start a background thread to process this job
+    t = Thread(
+        target=process_cover_letter_job,
+        args=(job_id, email_path, resume_paths, content_type),
+        daemon=True
+    )
+    t.start()
+
+    # Return immediately – frontend will poll /job_status/<job_id>
+    return jsonify({"success": True, "job_id": job_id})
+
+
+
+
+@app.route('/review/<job_id>', methods=['GET'])
+def review_emails(job_id):
+    job = JOBS.get(job_id)
+    if not job or job["status"] != "done":
+        return redirect(url_for('upload_files'))
+
+    emails_data = job["emails_data"]
+    providers = job.get("providers") or get_active_providers()
+
+    # Also put in session so send_email works
+    session['emails_data'] = emails_data
+
+    return render_template(
+        'review.html',
+        emails_data=emails_data,
+        job_id=job_id,
+        providers=providers,
+        provider_labels=PROVIDER_LABELS,
+    )
+
+
+
+ # "dclo ewei hyrg ltar"
+
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
+
+def send_message_via_gmail_api(creds, to_email, subject, body_text, attachment_path=None, bcc_email=None):
+    """Send a single email with optional attachment using Gmail API."""
+    # Refresh if needed
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        # put refreshed token back into session
+        stored = session.get("google_creds", {})
+        stored["token"] = creds.token
+        session["google_creds"] = stored
+
+    service = build("gmail", "v1", credentials=creds)
+
+    # ⚠️ REMOVE the profile call – no extra scopes needed
+    # profile = service.users().getProfile(userId="me").execute()
+    # sender_email = profile.get("emailAddress")
+
+    msg = MIMEMultipart()
+    # "From" is optional; Gmail will set it to the authenticated user automatically
+    # msg["From"] = sender_email  # <- remove or comment out
+    msg["To"] = to_email
+    if bcc_email:
+        msg["Bcc"] = bcc_email
+    msg["Subject"] = subject
+
+    # Body
+    msg.attach(MIMEText(body_text, "plain"))
+
+    # Attachment (resume)
+    if attachment_path:
+        with open(attachment_path, "rb") as resume_file:
+            attach_file = MIMEBase("application", "octet-stream")
+            attach_file.set_payload(resume_file.read())
+            encoders.encode_base64(attach_file)
+            attach_file.add_header(
+                "Content-Disposition",
+                f'attachment; filename="{os.path.basename(attachment_path)}"',
+            )
+            msg.attach(attach_file)
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+    body = {"raw": raw}
+
+    return service.users().messages().send(userId="me", body=body).execute()
+
+
+
+@app.route('/send_email', methods=['POST'])
+def send_email():
+    # 1) Get Google OAuth credentials
+    creds = get_google_creds()
+    if not creds:
+        return jsonify({
+            "success": False,
+            "message": "Google account not connected. Please go back to Home and click 'Connect with Google' first."
+        }), 401
+
+    emails_data = session.get('emails_data', [])
+    resume_paths = session.get('resume_paths', {})
+
+    approved_indexes = request.form.getlist("approve_")  # Get checked indexes (1-based)
+    print("✅ Approved indexes:", approved_indexes)
+
+    if not approved_indexes:
+        print("❌ No emails selected for sending!")
+        return jsonify({"success": False, "message": "No emails were selected!"})
+
+    # Build list of approved emails
+    filtered_emails = [emails_data[int(i) - 1] for i in approved_indexes]
+    print(f"✅ {len(filtered_emails)} emails to be sent.")
+
+    # Which provider tab was submitted (deepseek / openai / gemini)
+    provider = request.form.get("provider", "")
+
+    # Resolve the text to send for each approved row:
+    # prefer the edited textarea; otherwise fall back to the stored provider version.
+    for i, email in enumerate(filtered_emails):
+        form_index = int(approved_indexes[i])
+        edited_cover_letter = request.form.get(f"cover_letter_{form_index}")
+        if edited_cover_letter and edited_cover_letter.strip():
+            email["_send_text"] = edited_cover_letter.strip()
+        else:
+            letters = email.get("cover_letters", {})
+            email["_send_text"] = (
+                letters.get(provider)
+                or next(iter(letters.values()), "")
+                or email.get("cover_letter", "")  # legacy fallback
+            )
+
+    try:
+        # Optional: BCC to yourself (the logged-in Google account)
+        # We'll fetch it inside send_message_via_gmail_api, so just pass None here
+        for email in filtered_emails:
+            resume_filename = email.get("selected_resume")
+            resume_path = resume_paths.get(resume_filename)
+
+            if not resume_path:
+                print(f"❌ Resume path not found for {resume_filename}")
+                continue  # Skip this email if resume is missing
+
+            # Subject depends on whether this is a job application or a workshop promotion.
+            email_content_type = email.get("content_type") or session.get("content_type", "job_application")
+            if email_content_type == "workshop_promotion":
+                topic = (email.get("job_position") or "").strip()
+                if topic:
+                    subject = f"Workshop Invitation: {topic}"
+                else:
+                    subject = "Workshop Invitation for Your Students"
+            else:
+                subject = f"Job Application for {email['job_position']}"
+
+            body_text = email.get("_send_text", "")
+
+            send_message_via_gmail_api(
+                creds=creds,
+                to_email=email["recipient_email"],
+                subject=subject,
+                body_text=body_text,
+                attachment_path=resume_path,
+                bcc_email=None  # or set to a fixed address if you like
+            )
+
+            print(f"✅ Email sent to {email['recipient_email']} for {email['job_position']}")
+
+    except Exception as e:
+        msg = str(e)
+        # A dead Google token shows up as invalid_grant / "expired or revoked".
+        if "invalid_grant" in msg or "expired or revoked" in msg:
+            session.pop("google_creds", None)  # force a clean reconnect
+            print("❌ Google token expired/revoked — cleared session creds.")
+            return jsonify({
+                "success": False,
+                "reconnect": True,
+                "message": "Your Google sign-in has expired. Please return to Home, click "
+                           "'Connect with Google' again, then resend this row."
+            })
+        print(f"❌ Failed to send emails. Error: {e}")
+        return jsonify({"success": False, "message": f"Error: {e}"})
+
+    return jsonify({"success": True, "redirect_url": "/success"})
+
+
+
+from flask import jsonify
+
+@app.route("/test_openai")
+def test_openai():
+    print("🧪 /test_openai hit")
+    try:
+        from openai import OpenAI
+        client = OpenAI()  # will use OPENAI_API_KEY from env
+
+        resp = client.chat.completions.create(
+            model="gpt-4o",  # or your actual model
+            messages=[{"role": "user", "content": "Say 'ok' only."}],
+            max_tokens=5,
+            timeout=20,  # very strict, just for test
+        )
+        msg = resp.choices[0].message.content
+        print("🧪 OpenAI test response:", msg)
+        return jsonify({"status": "success", "reply": msg})
+    except Exception as e:
+        print("❌ OpenAI test error:", repr(e))
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+@app.route('/')
+def root():
+    return redirect(url_for('home'))
+
+
+@app.route('/success')
+def success():
+    return render_template('success.html')
+
+
+@app.route('/home')
+def home():
+    google_connected = "google_creds" in session
+    return render_template('home.html', google_connected=google_connected)
+
+@app.route('/view_resume/<filename>')
+def view_resume(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/job_status/<job_id>')
+def job_status(job_id):
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify({"success": False, "message": "Job not found"}), 404
+
+    return jsonify({
+        "success": True,
+        "status": job["status"],      # "queued" | "running" | "done" | "error"
+        "progress": job["progress"],  # rows processed
+        "total": job["total"],        # total rows
+        "error": job["error"],
+    })
+
+
+
+
+#if __name__ == '__main__':
+    #socketio.run(app,debug=True)
+    s#ocketio.run(app, debug=True, host='0.0.0.0', port=5000)
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    socketio.run(app, host="0.0.0.0", port=port)
