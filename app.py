@@ -55,7 +55,7 @@ app.config['SESSION_KEY_PREFIX'] = 'myapp:'
 app.config['SESSION_FILE_DIR'] = './flask_session_files'
 Session(app)
 
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['SECRET_KEY'] = 'your_secret_key'
 
@@ -201,18 +201,15 @@ def google_auth():
         prompt="consent",                 # ensures refresh_token first time
     )
     session["oauth_state"] = state
-
     # PKCE: authorization_url() generated a one-time code_verifier on this flow.
     # Save it so the callback (a fresh flow object) can complete the token exchange.
     session["code_verifier"] = flow.code_verifier
-
     return redirect(authorization_url)
 
 
 @app.route("/oauth2callback/google")
 def google_oauth_callback():
     flow = create_google_flow()
-
 
     # PKCE: restore the code_verifier that was generated when login started.
     # Without this, Google's token endpoint rejects the code ("Missing code verifier").
@@ -222,10 +219,6 @@ def google_oauth_callback():
     # but oauthlib requires the callback URL to be https.
     # (Locally over plain http://localhost this rewrite is still fine because only
     #  the ?code=/?state= query params are read from this URL.)
-
-    # Koyeb terminates HTTPS and calls our app over HTTP,
-    # but oauthlib requires the callback URL to be https.
-
     auth_response = request.url
     if auth_response.startswith("http://"):
         auth_response = auth_response.replace("http://", "https://", 1)
@@ -342,6 +335,18 @@ Job description:
     try:
         result = llm.invoke(prompt)
         raw = result.content if hasattr(result, "content") else str(result)
+        raw = (raw or "").strip()
+
+        # Models sometimes wrap JSON in ```json ... ``` fences or add stray prose.
+        if raw.startswith("```"):
+            raw = raw.strip("`").strip()
+            if raw[:4].lower() == "json":
+                raw = raw[4:].strip()
+        # Extract the JSON object itself, ignoring anything before/after it.
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            raw = raw[start:end + 1]
+
         data = json.loads(raw)
 
         row = {
@@ -371,7 +376,6 @@ def logout():
 
 
 
-
 # Model IDs are configurable via .env so you can swap models without editing code.
 # (OpenRouter occasionally renames/retires model slugs — just update these if so.)
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
@@ -382,8 +386,8 @@ OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 #     otherwise fall back to routing through OpenRouter. ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # direct key from Google AI Studio
 GEMINI_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# Direct Google model name (bare, e.g. "gemini-2.0-flash"):
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# Direct Google model name (bare, e.g. "gemini-3.6-flash"):
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 # OpenRouter slug used only if no direct key is available:
 GEMINI_OPENROUTER_MODEL = os.getenv("GEMINI_OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
 
@@ -398,15 +402,6 @@ def initialize_llm(llm_provider):
         return ChatOpenAI(model=GEMINI_OPENROUTER_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE, temperature=0)
     # Default to OpenAI
     return ChatOpenAI(model=OPENAI_MODEL, openai_api_key=OPENAI_API_KEY, temperature=0)
-
-def initialize_llm(llm_provider):
-    if llm_provider == "deepseek":
-        return ChatOpenAI(model="deepseek/deepseek-chat",openai_api_key=OPENROUTER_API_KEY,openai_api_base="https://openrouter.ai/api/v1", temperature=0)
-    elif llm_provider == 'gemini':
-        return ChatOpenAI(model="google/gemini-2.0-flash-001",openai_api_key=OPENROUTER_API_KEY,openai_api_base="https://openrouter.ai/api/v1", temperature=0)
-    # Replace with DeepSeek's chat model
-    return ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY, temperature=0) # Default to OpenAI
-
 
 
 #llm = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY)
@@ -424,7 +419,14 @@ current_date = datetime.today().strftime('%B %d, %Y')
 
 def fetch_website_info(website_url):
     """Fetches the main content of a company's website to personalize the cover letter."""
-    if not website_url or not website_url.startswith("http"):
+    # Blank cells from Excel come through as NaN (a float) or None — coerce safely
+    # so we never call string methods on a non-string.
+    if website_url is None:
+        return None
+    website_url = str(website_url).strip()
+    if (not website_url
+            or website_url.lower() in ("nan", "none", "n/a")
+            or not website_url.startswith("http")):
         return None  # Ensure the website URL is valid
 
     try:
@@ -448,7 +450,6 @@ def fetch_website_info(website_url):
     return None
 
 # Generate AI-based cover letter
-
 def generate_cover_letter(company_name, job_position, job_description, website_info, resume_text, llm_provider, content_type="job_application"):
     #print(f"🚀 Starting cover letter for {company_name} - {job_position}")
     """
@@ -458,12 +459,6 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
       - "job_application"   -> a cover letter applying for a job (default / original behaviour)
       - "workshop_promotion"-> a promotional outreach letter inviting a university/college
                                to host or allow a workshop, NOT a job application.
-
-def generate_cover_letter(company_name, job_position, job_description, website_info, resume_text, llm_provider):
-    #print(f"🚀 Starting cover letter for {company_name} - {job_position}")
-    """
-    Generates a professional and truthful cover letter based strictly on resume details.
-
     """
     #llm_provider = session.get('llm_provider', 'openai')  # Default to OpenAI if not set
     # use the passed-in provider, default if None
@@ -487,7 +482,6 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
 
     # Get the current date
     current_date = datetime.today().strftime('%B %d, %Y')
-
 
     if content_type == "workshop_promotion":
         # ----- WORKSHOP PROMOTION PROMPT -----
@@ -555,9 +549,6 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
     else:
         # ----- JOB APPLICATION PROMPT (original behaviour) -----
         prompt_text = f"""
-
-    prompt = ChatPromptTemplate.from_template(f"""
-
     You are a **highly precise and fact-based** job application assistant. 
     Your task is to generate a **truthful, concise, and professional** cover letter based **ONLY on the provided resume**.
 
@@ -599,7 +590,6 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
     [City, Country from Address in {resume_text}]
     Phone: [Phone number from {resume_text}]
     
-
     """
 
     # Runtime proof of which prompt was selected (visible in the server console).
@@ -607,9 +597,6 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
     print(f"📝 [{mode_label}] provider={llm_provider} | {company_name} - {job_position}")
 
     prompt = ChatPromptTemplate.from_template(prompt_text)
-
-    """)
-
 
     # Create an LLM Chain using LangChain
     #chain = prompt | llm
@@ -810,7 +797,6 @@ def select_best_resume(job_description, resume_texts, llm_provider):
         print(f"❌ Resume selection error: {e}")
         return None
 
-
 # --- Providers we generate with, and the labels shown on the review tabs ---
 ALL_PROVIDERS = ["openai", "deepseek", "gemini"]
 PROVIDER_LABELS = {
@@ -839,17 +825,41 @@ def get_active_providers():
     return active or list(ALL_PROVIDERS)
 
 
+def clean_cell(value):
+    """
+    Normalize a spreadsheet cell to a clean string.
+    Blank cells arrive from pandas as NaN (a float), which breaks string operations
+    and can render as the literal 'nan' in letters. Return '' for empty/blank cells.
+    """
+    if value is None:
+        return ""
+    try:
+        if isinstance(value, float) and pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    s = str(value).strip()
+    return "" if s.lower() in ("nan", "none", "n/a") else s
+
+
+def cell_at(row, i):
+    """
+    Read a spreadsheet cell BY POSITION (0-based), regardless of the header text.
+    Returns a clean string, or '' if that column doesn't exist in the file.
+    This avoids breakage when headers are named differently (e.g. 'Recruiter Email'
+    vs 'Email') or truncated.
+    """
+    try:
+        return clean_cell(row.iloc[i])
+    except (IndexError, KeyError):
+        return ""
+
+
 def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application"):
     """
     Background worker: reads the Excel, picks ONE resume per row, then generates a
     letter with EVERY active provider so the user can compare them in tabs.
     Fills JOBS[job_id]["emails_data"].
-
-def process_cover_letter_job(job_id, email_path, resume_paths, llm_provider):
-    """
-    Background worker: reads the Excel, picks resumes, calls LLM,
-    and fills JOBS[job_id]["emails_data"].
-
     """
     try:
         # Load Excel/CSV
@@ -866,7 +876,6 @@ def process_cover_letter_job(job_id, email_path, resume_paths, llm_provider):
             JOBS[job_id]["error"] = f"Error loading resume texts: {e}"
             return
 
-
         providers = get_active_providers()
         # Provider used only for picking the resume (kept identical across all tabs).
         selection_provider = providers[0]
@@ -880,40 +889,29 @@ def process_cover_letter_job(job_id, email_path, resume_paths, llm_provider):
 
         done_steps = 0
         for index, row in df.iterrows():
-            company_name = row['Company Name']
-            job_position = row['Job Position']
-            job_description = str(row.get('Job Description', '') or '').strip()
-            recipient_email = row['Email']
-            company_website = row.get('Website', '')
+            # Read by COLUMN POSITION, not header name, so different / truncated
+            # headers (e.g. "Recruiter Email" instead of "Email") still work.
+            #   col 0 -> Recruiter Email
+            #   col 1 -> Company Name
+            #   col 2 -> Job Position
+            #   col 3 -> Job Description
+            #   col 4 -> Company Website
+            recipient_email = cell_at(row, 0)
+            company_name    = cell_at(row, 1)
+            job_position    = cell_at(row, 2)
+            job_description = cell_at(row, 3)
+            company_website = cell_at(row, 4)
 
             # Pick ONE resume for this row; the same resume appears in every provider tab.
             best_resume_filename = select_best_resume(job_description, resume_texts, selection_provider)
             if not best_resume_filename and resume_texts:
                 best_resume_filename = next(iter(resume_texts))  # fallback: first resume
-
-        emails_data = []
-
-        JOBS[job_id]["total"] = total_jobs
-        JOBS[job_id]["status"] = "running"
-        JOBS[job_id]["progress"] = 0
-
-        for index, row in df.iterrows():
-            company_name = row['Company Name']
-            job_position = row['Job Position']
-            job_description = row.get('Job Description', '').strip()
-            recipient_email = row['Email']
-            company_website = row.get('Website', '')
-
-            # Pick best resume for this job
-            best_resume_filename = select_best_resume(job_description, resume_texts, llm_provider)
-
             print(f"🔍 Selected Resume for {job_position}: {best_resume_filename}")
 
             best_resume_text = resume_texts.get(best_resume_filename, "")
 
             # Optional website info
             website_info = fetch_website_info(company_website) if company_website else None
-
 
             # Generate one letter per provider.
             cover_letters = {}
@@ -935,45 +933,21 @@ def process_cover_letter_job(job_id, email_path, resume_paths, llm_provider):
                 done_steps += 1
                 JOBS[job_id]["progress"] = done_steps
 
-            # Generate cover letter
-            cover_letter = generate_cover_letter(
-                company_name,
-                job_position,
-                job_description,
-                website_info,
-                best_resume_text,
-                llm_provider
-            )
-
-
             emails_data.append({
                 'recipient_email': recipient_email,
                 'company_name': company_name,
                 'job_position': job_position,
                 'job_description': job_description or "No job description available.",
                 'selected_resume': best_resume_filename,
-
                 'content_type': content_type,
                 'cover_letters': cover_letters,
             })
-
-
-                'cover_letter': cover_letter
-            })
-
-            # Update progress
-            JOBS[job_id]["progress"] = index + 1
-
 
         JOBS[job_id]["emails_data"] = emails_data
         JOBS[job_id]["status"] = "done"
         JOBS[job_id]["error"] = None
 
-
         print(f"✅ Job {job_id} completed: {len(emails_data)} rows × {len(providers)} providers.")
-
-        print(f"✅ Job {job_id} completed with {len(emails_data)} emails.")
-
 
     except Exception as e:
         print(f"❌ Unexpected error in job {job_id}: {e}")
@@ -990,13 +964,9 @@ def generate_cover_letters():
     email_path = session.get('email_path')
     resume_paths = session.get('resume_paths', {})
 
-
     # Only the content type matters now — we generate with all providers automatically.
     content_type = request.args.get('content_type') or session.get('content_type', 'job_application')
     session['content_type'] = content_type
-
-    llm_provider = session.get('llm_provider', 'openai')
-
 
     if not email_path or not resume_paths:
         return jsonify({"success": False, "message": "Please upload Excel and resumes first."}), 400
@@ -1010,20 +980,14 @@ def generate_cover_letters():
         "progress": 0,
         "total": 0,
         "emails_data": [],
-
         "providers": [],
-
         "error": None,
     }
 
     # Start a background thread to process this job
     t = Thread(
         target=process_cover_letter_job,
-
         args=(job_id, email_path, resume_paths, content_type),
-
-        args=(job_id, email_path, resume_paths, llm_provider),
-
         daemon=True
     )
     t.start()
@@ -1041,7 +1005,6 @@ def review_emails(job_id):
         return redirect(url_for('upload_files'))
 
     emails_data = job["emails_data"]
-
     providers = job.get("providers") or get_active_providers()
 
     # Also put in session so send_email works
@@ -1054,13 +1017,6 @@ def review_emails(job_id):
         providers=providers,
         provider_labels=PROVIDER_LABELS,
     )
-
-
-    # Also put in session so send_email works as before
-    session['emails_data'] = emails_data
-
-    return render_template('review.html', emails_data=emails_data, job_id=job_id)
-
 
 
 
@@ -1138,7 +1094,6 @@ def send_email():
     filtered_emails = [emails_data[int(i) - 1] for i in approved_indexes]
     print(f"✅ {len(filtered_emails)} emails to be sent.")
 
-
     # Which provider tab was submitted (deepseek / openai / gemini)
     provider = request.form.get("provider", "")
 
@@ -1157,14 +1112,6 @@ def send_email():
                 or email.get("cover_letter", "")  # legacy fallback
             )
 
-    # Apply any edited cover letters from the form
-    for i, email in enumerate(filtered_emails):
-        form_index = int(approved_indexes[i])
-        edited_cover_letter = request.form.get(f"cover_letter_{form_index}")
-        if edited_cover_letter:
-            email["cover_letter"] = edited_cover_letter.strip()
-
-
     try:
         # Optional: BCC to yourself (the logged-in Google account)
         # We'll fetch it inside send_message_via_gmail_api, so just pass None here
@@ -1175,7 +1122,6 @@ def send_email():
             if not resume_path:
                 print(f"❌ Resume path not found for {resume_filename}")
                 continue  # Skip this email if resume is missing
-
 
             # Subject depends on whether this is a job application or a workshop promotion.
             email_content_type = email.get("content_type") or session.get("content_type", "job_application")
@@ -1190,10 +1136,6 @@ def send_email():
 
             body_text = email.get("_send_text", "")
 
-            subject = f"Job Application for {email['job_position']}"
-            body_text = email["cover_letter"]
-
-
             send_message_via_gmail_api(
                 creds=creds,
                 to_email=email["recipient_email"],
@@ -1206,7 +1148,6 @@ def send_email():
             print(f"✅ Email sent to {email['recipient_email']} for {email['job_position']}")
 
     except Exception as e:
-
         msg = str(e)
         # A dead Google token shows up as invalid_grant / "expired or revoked".
         if "invalid_grant" in msg or "expired or revoked" in msg:
@@ -1218,7 +1159,6 @@ def send_email():
                 "message": "Your Google sign-in has expired. Please return to Home, click "
                            "'Connect with Google' again, then resend this row."
             })
-
         print(f"❌ Failed to send emails. Error: {e}")
         return jsonify({"success": False, "message": f"Error: {e}"})
 

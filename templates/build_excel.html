@@ -78,14 +78,20 @@
 </div>
 
 <script>
-    let rowCount = 0;
+    const rowsBody = document.getElementById("rowsBody");
+
+    function renumberRows() {
+        // Keep the "#" column in order regardless of adds/removes/fills
+        [...rowsBody.querySelectorAll("tr")].forEach((tr, i) => {
+            const cell = tr.querySelector("td");
+            if (cell) cell.textContent = i + 1;
+        });
+    }
 
     function addRow(data) {
-        rowCount += 1;
         const row = document.createElement("tr");
-
         row.innerHTML = `
-            <td>${rowCount}</td>
+            <td></td>
             <td><input type="email" class="form-control" name="email[]" value="${data?.["Email"] || ""}"></td>
             <td><input type="text" class="form-control" name="company[]" value="${data?.["Company Name"] || ""}"></td>
             <td><input type="text" class="form-control" name="position[]" value="${data?.["Job Position"] || ""}"></td>
@@ -95,19 +101,41 @@
                 <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeRow(this)">✕</button>
             </td>
         `;
-        document.getElementById("rowsBody").appendChild(row);
+        rowsBody.appendChild(row);
+        renumberRows();
+        return row;
     }
 
     function removeRow(btn) {
         const row = btn.closest("tr");
         if (row) row.remove();
+        renumberRows();
+    }
+
+    // Is a table row completely empty across all its fields?
+    function isRowEmpty(tr) {
+        return [...tr.querySelectorAll("input, textarea")]
+            .every(el => !el.value.trim());
+    }
+
+    // Put extracted data into an existing empty row if there is one; else add a new row.
+    function fillEmptyRowOrAdd(data) {
+        const rows = [...rowsBody.querySelectorAll("tr")];
+        const emptyRow = rows.find(isRowEmpty);
+        const target = emptyRow || addRow({});
+        target.querySelector('input[name="email[]"]').value       = data?.["Email"] || "";
+        target.querySelector('input[name="company[]"]').value     = data?.["Company Name"] || "";
+        target.querySelector('input[name="position[]"]').value    = data?.["Job Position"] || "";
+        target.querySelector('textarea[name="description[]"]').value = data?.["Job Description"] || "";
+        target.querySelector('input[name="website[]"]').value     = data?.["Website"] || "";
+        renumberRows();
     }
 
     document.getElementById("addRowBtn").addEventListener("click", function () {
         addRow({});
     });
 
-    // AI: send job_text to backend, append returned row
+    // AI: send job_text to backend, then fill an empty row (or add one)
     document.getElementById("aiAddRowBtn").addEventListener("click", function () {
         const jobText = document.getElementById("job_text").value.trim();
         const statusEl = document.getElementById("aiStatus");
@@ -129,8 +157,8 @@
                     statusEl.textContent = "";
                     return;
                 }
-                addRow(resp.row);
-                statusEl.textContent = "✅ Row added using AI. You can edit it above.";
+                fillEmptyRowOrAdd(resp.row);
+                statusEl.textContent = "✅ Row filled using AI. You can edit it above.";
                 document.getElementById("job_text").value = "";
             },
             error: function (xhr, status, error) {

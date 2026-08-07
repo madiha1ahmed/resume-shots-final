@@ -17,7 +17,8 @@
 
             <div class="mb-3">
     <label class="form-label">Upload Excel/CSV File</label>
-    <input type="file" class="form-control" name="email_file" id="email_file" required>
+    <input type="file" class="form-control" name="email_file" id="email_file" accept=".xlsx,.xls,.csv" required>
+    <div id="excelPreview" class="mt-2"></div>
     <p class="mt-2">
         Don't have an Excel/CSV file?
         <a href="{{ url_for('build_excel') }}">Click here to build one.</a>
@@ -27,12 +28,12 @@
 
             <div class="mb-3">
                 <label class="form-label">Upload Resume (PDF)</label>
-                <input type="file" class="form-control" name="resume_files" id="resume_files" multiple required>
-
+                <input type="file" class="form-control" name="resume_files" id="resume_files" accept=".pdf" multiple required>
+                <div id="resumePreview" class="mt-2"></div>
+                <small class="text-muted">You can select more files in a second pick — they add on. Click ✕ to remove any before uploading.</small>
             </div>
             <button type="submit" class="btn btn-primary">Upload</button>
         </form>
-
 
         <!-- Content Type / Purpose Dropdown -->
         <div class="mb-3 mt-3">
@@ -53,17 +54,6 @@
                 We'll generate each letter with <strong>every AI model</strong> (ChatGPT, DeepSeek, Gemini)
                 so you can compare them side by side on the next screen.
             </p>
-
-        <!-- LLM Dropdown (Initially Disabled) -->
-        <div class="mb-3 mt-3">
-            <label class="form-label">Select LLM Provider</label>
-            <select class="form-control" name="llm_provider" id="llm_provider" disabled required>
-                <option value="" disabled selected>-- Select LLM --</option>
-                <option value="openai">OpenAI-GPT-4o</option>
-                <option value="deepseek">DeepSeek-V3</option>
-                <option value="gemini">Google: Gemini Flash 2.0</option>
-            </select>
-
         </div>
 
         <!-- Progress Bar -->
@@ -90,13 +80,8 @@
             processData: false,
             contentType: false,
             success: function(response) {
-
                 alert("✅ Files uploaded successfully! Now click 'Generate Cover Letters'.");
                 $("#generateBtn").prop("disabled", false); // Enable generate button
-
-                alert("✅ Files uploaded successfully! Now select an LLM provider.");
-                $("#llm_provider").prop("disabled", false); // Enable dropdown
-
             },
             error: function(xhr, status, error) {
                 alert("❌ Error uploading files: " + error);
@@ -104,37 +89,15 @@
         });
     });
 
-
-
-    // Enable "Generate Cover Letters" button only when an LLM is selected
-    $("#llm_provider").change(function() {
-        alert("✅ LLM provider selected. Now click 'Generate Cover Letters'.");
-        $("#generateBtn").prop("disabled", false);
-    });
-
-
     function startGeneration() {
         $("#generateBtn").prop("disabled", true);
         $("#progressBar").css("width", "0%").text("0%");
-
 
         const contentType = $("#content_type").val() || "job_application";
 
         // 1) Start the job (no provider — all providers run automatically)
         $.ajax({
             url: "/generate_cover_letters?content_type=" + encodeURIComponent(contentType),
-
-        const provider = $("#llm_provider").val();
-        if (!provider) {
-            alert("Please select an LLM provider first.");
-            $("#generateBtn").prop("disabled", false);
-            return;
-        }
-
-        // 1) Start the job
-        $.ajax({
-            url: "/generate_cover_letters?llm_provider=" + encodeURIComponent(provider),
-
             type: "GET",
             success: function(response) {
                 if (response.success) {
@@ -198,6 +161,75 @@
             }
         });
     }
+</script>
+
+<script>
+    // ---- File preview + individual remove for Excel and Resumes ----
+    (function () {
+        const excelInput   = document.getElementById("email_file");
+        const excelPreview = document.getElementById("excelPreview");
+        const resumeInput  = document.getElementById("resume_files");
+        const resumePreview= document.getElementById("resumePreview");
+
+        // A DataTransfer gives us an editable FileList so we can remove single files.
+        const resumeDT = new DataTransfer();
+
+        function makeChip(name, onRemove) {
+            const wrap = document.createElement("span");
+            wrap.className = "badge bg-light text-dark border me-2 mb-2 p-2 d-inline-flex align-items-center";
+            wrap.style.fontSize = "0.85rem";
+
+            const label = document.createElement("span");
+            label.textContent = name;
+
+            const x = document.createElement("button");
+            x.type = "button";
+            x.textContent = "✕";
+            x.className = "btn btn-sm btn-outline-danger ms-2 py-0 px-1";
+            x.style.lineHeight = "1";
+            x.addEventListener("click", onRemove);
+
+            wrap.appendChild(label);
+            wrap.appendChild(x);
+            return wrap;
+        }
+
+        // ----- Resumes (multiple, each removable) -----
+        function renderResumes() {
+            resumePreview.innerHTML = "";
+            [...resumeDT.files].forEach(function (file, idx) {
+                resumePreview.appendChild(makeChip(file.name, function () {
+                    const kept = [...resumeDT.files].filter((_, i) => i !== idx);
+                    resumeDT.items.clear();
+                    kept.forEach(f => resumeDT.items.add(f));
+                    resumeInput.files = resumeDT.files;
+                    renderResumes();
+                }));
+            });
+        }
+
+        resumeInput.addEventListener("change", function () {
+            // Merge newly picked files, skipping duplicates (same name + size).
+            const seen = new Set([...resumeDT.files].map(f => f.name + ":" + f.size));
+            [...resumeInput.files].forEach(function (f) {
+                if (!seen.has(f.name + ":" + f.size)) resumeDT.items.add(f);
+            });
+            resumeInput.files = resumeDT.files;  // keep the real input in sync for submit
+            renderResumes();
+        });
+
+        // ----- Excel / CSV (single file) -----
+        function renderExcel() {
+            excelPreview.innerHTML = "";
+            if (excelInput.files.length) {
+                excelPreview.appendChild(makeChip(excelInput.files[0].name, function () {
+                    excelInput.value = "";   // clear the single-file input
+                    renderExcel();
+                }));
+            }
+        }
+        excelInput.addEventListener("change", renderExcel);
+    })();
 </script>
 
 </body>
