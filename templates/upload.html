@@ -15,6 +15,19 @@
         <form id="uploadForm" method="post" enctype="multipart/form-data"
       action="{{ url_for('upload_files') }}">
 
+            <!-- Content Type / Purpose Dropdown (choose FIRST) -->
+            <div class="mb-3">
+                <label class="form-label">What is this content for?</label>
+                <select class="form-control" name="content_type" id="content_type" required>
+                    <option value="job_application" selected>Job Application (send to recruiters)</option>
+                    <option value="workshop_promotion">Workshop Promotion (send to universities &amp; colleges)</option>
+                </select>
+                <small class="text-muted">
+                    This decides how each letter is written — a job cover letter, or a promotional
+                    invitation to host your workshop.
+                </small>
+            </div>
+
             <div class="mb-3">
     <label class="form-label">Upload Excel/CSV File</label>
     <input type="file" class="form-control" name="email_file" id="email_file" accept=".xlsx,.xls,.csv" required>
@@ -32,21 +45,17 @@
                 <div id="resumePreview" class="mt-2"></div>
                 <small class="text-muted">You can select more files in a second pick — they add on. Click ✕ to remove any before uploading.</small>
             </div>
-            <button type="submit" class="btn btn-primary">Upload</button>
-        </form>
 
-        <!-- Content Type / Purpose Dropdown -->
-        <div class="mb-3 mt-3">
-            <label class="form-label">What is this content for?</label>
-            <select class="form-control" name="content_type" id="content_type" required>
-                <option value="job_application" selected>Job Application (send to recruiters)</option>
-                <option value="workshop_promotion">Workshop Promotion (send to universities &amp; colleges)</option>
-            </select>
-            <small class="text-muted">
-                This decides how each letter is written — a job cover letter, or a promotional
-                invitation to host your workshop.
-            </small>
-        </div>
+            <!-- Workshop banner image (only shown for Workshop Promotion) -->
+            <div class="mb-3" id="workshopImageWrap" style="display:none;">
+                <label class="form-label">Workshop Banner / Poster (optional)</label>
+                <input type="file" class="form-control" name="workshop_image" id="workshop_image" accept="image/*">
+                <div id="imagePreview" class="mt-2"></div>
+                <small class="text-muted">This image is placed <strong>inside the email body</strong> (not as an attachment).</small>
+            </div>
+
+            <button type="submit" id="uploadBtn" class="btn btn-primary">Upload</button>
+        </form>
 
         <!-- Note: we now generate with ALL providers so you can compare them -->
         <div class="mb-3 mt-3">
@@ -73,6 +82,13 @@
 
         var formData = new FormData(this);
 
+        // Show a loading state so it's clear the upload is in progress
+        const $btn = $("#uploadBtn");
+        const originalText = $btn.html();
+        $btn.prop("disabled", true).html(
+            '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Uploading…'
+        );
+
         $.ajax({
             url: "{{ url_for('upload_files') }}", 
             type: "POST",
@@ -80,10 +96,14 @@
             processData: false,
             contentType: false,
             success: function(response) {
-                alert("✅ Files uploaded successfully! Now click 'Generate Cover Letters'.");
+                $btn.prop("disabled", false).html('✅ Uploaded (click to re-upload)')
+                    .removeClass("btn-primary").addClass("btn-success");
                 $("#generateBtn").prop("disabled", false); // Enable generate button
+                alert("✅ Files uploaded successfully! Now click 'Generate Cover Letters'.");
             },
             error: function(xhr, status, error) {
+                // Restore the button so the user can try again
+                $btn.prop("disabled", false).removeClass("btn-success").addClass("btn-primary").html(originalText);
                 alert("❌ Error uploading files: " + error);
             }
         });
@@ -229,6 +249,46 @@
             }
         }
         excelInput.addEventListener("change", renderExcel);
+
+        // ----- Workshop banner image (single file, only in workshop mode) -----
+        const contentTypeSel = document.getElementById("content_type");
+        const workshopWrap   = document.getElementById("workshopImageWrap");
+        const imageInput     = document.getElementById("workshop_image");
+        const imagePreview   = document.getElementById("imagePreview");
+
+        function toggleWorkshopImage() {
+            const isWorkshop = contentTypeSel.value === "workshop_promotion";
+            workshopWrap.style.display = isWorkshop ? "block" : "none";
+            if (!isWorkshop) {           // clear the image if user switches away
+                imageInput.value = "";
+                imagePreview.innerHTML = "";
+            }
+        }
+
+        function renderImage() {
+            imagePreview.innerHTML = "";
+            if (imageInput.files.length) {
+                const file = imageInput.files[0];
+                // small thumbnail + name + remove
+                const thumb = document.createElement("img");
+                thumb.src = URL.createObjectURL(file);
+                thumb.style.maxHeight = "80px";
+                thumb.style.borderRadius = "6px";
+                thumb.style.marginRight = "8px";
+                thumb.style.verticalAlign = "middle";
+                const wrap = document.createElement("div");
+                wrap.className = "d-inline-flex align-items-center";
+                wrap.appendChild(thumb);
+                wrap.appendChild(makeChip(file.name, function () {
+                    imageInput.value = "";
+                    renderImage();
+                }));
+                imagePreview.appendChild(wrap);
+            }
+        }
+        imageInput.addEventListener("change", renderImage);
+        contentTypeSel.addEventListener("change", toggleWorkshopImage);
+        toggleWorkshopImage();  // set initial state on page load
     })();
 </script>
 

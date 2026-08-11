@@ -7,6 +7,8 @@ import pandas as pd
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
+import html as html_lib
 from email import encoders
 import pdfplumber
 from langchain_openai import ChatOpenAI
@@ -663,7 +665,7 @@ def upload_files():
 
     if request.method == 'POST':
         # Instead of session.clear(), selectively remove only upload-related keys
-        for key in ["email_path", "resume_paths", "emails_data"]:
+        for key in ["email_path", "resume_paths", "emails_data", "workshop_image_path"]:
             session.pop(key, None)
 
 
@@ -698,6 +700,13 @@ def upload_files():
 
         session['email_path'] = email_path
         session['resume_paths'] = resume_paths  # Keep only file paths in session
+
+        # Optional workshop banner image — embedded inline in workshop emails.
+        workshop_image = request.files.get('workshop_image')
+        if workshop_image and workshop_image.filename:
+            image_path = os.path.join(app.config['UPLOAD_FOLDER'], workshop_image.filename)
+            workshop_image.save(image_path)
+            session['workshop_image_path'] = image_path
 
         return jsonify({"success": True, "message": "Files uploaded successfully!"})
 
@@ -1024,34 +1033,69 @@ def review_emails(job_id):
 
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 
-def send_message_via_gmail_api(creds, to_email, subject, body_text, attachment_path=None, bcc_email=None):
-    """Send a single email with optional attachment using Gmail API."""
+def send_message_via_gmail_api(creds, to_email, subject, body_text, attachment_path=None,
+                               bcc_email=None, inline_image_path=None):
+    """
+    Send a single email via the Gmail API.
+      - attachment_path:   file attached normally (e.g. the resume).
+      - inline_image_path: image shown INSIDE the email body (e.g. a workshop banner),
+                           embedded via a Content-ID, NOT as a downloadable attachment.
+    """
     # Refresh if needed
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        # put refreshed token back into session
         stored = session.get("google_creds", {})
         stored["token"] = creds.token
         session["google_creds"] = stored
 
     service = build("gmail", "v1", credentials=creds)
 
-    # ⚠️ REMOVE the profile call – no extra scopes needed
-    # profile = service.users().getProfile(userId="me").execute()
-    # sender_email = profile.get("emailAddress")
-
-    msg = MIMEMultipart()
-    # "From" is optional; Gmail will set it to the authenticated user automatically
-    # msg["From"] = sender_email  # <- remove or comment out
+    # Outer container holds the message body (+ inline image) and any attachments.
+    msg = MIMEMultipart("mixed")
     msg["To"] = to_email
     if bcc_email:
         msg["Bcc"] = bcc_email
     msg["Subject"] = subject
 
-    # Body
-    msg.attach(MIMEText(body_text, "plain"))
+    if inline_image_path and os.path.exists(inline_image_path):
+        # HTML body with the banner embedded inline via cid.
+        # "related" groups the HTML with the image it references.
+        related = MIMEMultipart("related")
 
-    # Attachment (resume)
+        safe_text = html_lib.escape(body_text or "")
+        html_body = (
+            '<div style="font-family:Arial,sans-serif;font-size:14px;'
+            'line-height:1.5;white-space:pre-wrap;">'
+            f'{safe_text}'
+            '</div>'
+            '<div style="margin-top:16px;">'
+            '<img src="cid:workshopbanner" alt="Workshop banner" '
+            'style="max-width:100%;height:auto;border-radius:6px;">'
+            '</div>'
+        )
+
+        # Provide both plain-text and HTML so every client can render something.
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(body_text or "", "plain"))
+        alt.attach(MIMEText(html_body, "html"))
+        related.attach(alt)
+
+        # The image itself, marked inline and tagged with the cid used above.
+        with open(inline_image_path, "rb") as img_f:
+            ext = os.path.splitext(inline_image_path)[1].lower().lstrip(".")
+            subtype = "jpeg" if ext in ("jpg", "jpeg") else (ext or "png")
+            img = MIMEImage(img_f.read(), _subtype=subtype)
+            img.add_header("Content-ID", "<workshopbanner>")
+            img.add_header("Content-Disposition", "inline",
+                           filename=os.path.basename(inline_image_path))
+            related.attach(img)
+
+        msg.attach(related)
+    else:
+        # Plain-text body (original behaviour)
+        msg.attach(MIMEText(body_text or "", "plain"))
+
+    # Attachment (resume) — a normal downloadable attachment
     if attachment_path:
         with open(attachment_path, "rb") as resume_file:
             attach_file = MIMEBase("application", "octet-stream")
@@ -1136,13 +1180,19 @@ def send_email():
 
             body_text = email.get("_send_text", "")
 
+            # In workshop mode, embed the uploaded banner inside the email body.
+            inline_image_path = None
+            if email_content_type == "workshop_promotion":
+                inline_image_path = session.get("workshop_image_path")
+
             send_message_via_gmail_api(
                 creds=creds,
                 to_email=email["recipient_email"],
                 subject=subject,
                 body_text=body_text,
                 attachment_path=resume_path,
-                bcc_email=None  # or set to a fixed address if you like
+                bcc_email=None,  # or set to a fixed address if you like
+                inline_image_path=inline_image_path
             )
 
             print(f"✅ Email sent to {email['recipient_email']} for {email['job_position']}")
