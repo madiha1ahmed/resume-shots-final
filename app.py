@@ -452,47 +452,58 @@ def fetch_website_info(website_url):
     return None
 
 # Generate AI-based cover letter
-def generate_cover_letter(company_name, job_position, job_description, website_info, resume_text, llm_provider, content_type="job_application"):
-    #print(f"🚀 Starting cover letter for {company_name} - {job_position}")
+# =========================================================================
+# Prompt templates. Placeholders in {curly_braces} are filled at generation.
+# Users can override these with their own prompt from the upload page.
+# Available placeholders:
+#   {company_name} {job_position} {job_description}
+#   {resume_text}  {website_section} {current_date}
+# =========================================================================
+
+JOB_PROMPT_TEMPLATE = """
+    You are a **highly precise and fact-based** job application assistant. 
+    Your task is to generate a **truthful, concise, and professional** cover letter based **ONLY on the provided resume**.
+
+    **Candidate Details:**
+    - **Name:** [Name from {resume_text}]
+    - **Address:** [Address from {resume_text}]
+    - **Phone Number:** [Phone Number from {resume_text}]
+    - **Date:** {current_date}
+
+    **Job Application Details:**
+    - **Company:** {company_name}
+    - **Position:** {job_position}
+    - **Job Description:** {job_description}
+
+    **Candidate's Resume:**
+    {resume_text}
+
+    {website_section}
+
+    **STRICT RULES:**
+    - **DO NOT fabricate any experiences, degrees, or skills that are NOT present in the resume.**
+    - **Only extract relevant skills and qualifications from the resume text above.**
+    - **If a required skill is missing, acknowledge it politely and express eagerness to learn.**
+    - **No generic statements like "passionate about teaching" unless proven from the resume.**
+    - **If website insights are available, integrate them naturally.**
+    - **Do not include LinkedIn Profile in the cover letter**
+    - **No more than TWO paragraphs.**
+
+    **Example Cover Letter Structure:**
+
+    Dear Hiring Team of {company_name},
+
+    I am excited to apply for the {job_position} role at {company_name}. My background in **[relevant expertise from {resume_text}]** has enabled me to **[explain how your experience aligns with job responsibilities]**. {website_section}
+
+    I look forward to the opportunity to discuss how my expertise in **[relevant experience in {resume_text}]** can contribute to **[company's goal or project mentioned in job description]**.
+
+    Sincerely,  
+    [Name from {resume_text}] 
+    [City, Country from Address in {resume_text}]
+    Phone: [Phone number from {resume_text}]
     """
-    Generates a professional and truthful letter based strictly on resume details.
 
-    content_type controls how the letter is framed:
-      - "job_application"   -> a cover letter applying for a job (default / original behaviour)
-      - "workshop_promotion"-> a promotional outreach letter inviting a university/college
-                               to host or allow a workshop, NOT a job application.
-    """
-    #llm_provider = session.get('llm_provider', 'openai')  # Default to OpenAI if not set
-    # use the passed-in provider, default if None
-    if not llm_provider:
-        llm_provider = "openai"
-    
-    llm = initialize_llm(llm_provider)
-
-    # Ensure that website information is included properly if available
-    #website_section = (
-       # f"\nI reviewed the information available on {company_name}'s website and was particularly drawn to {website_info}. "
-        #if website_info and website_info.lower() != "no website available"
-        #else ""
-    #)
-
-    if website_info and website_info.strip():
-        website_section = f"I reviewed {company_name}'s website and was particularly drawn to {website_info}."
-    else:
-        website_section = ""  # Leave blank if no website info
-
-
-    # Get the current date
-    current_date = datetime.today().strftime('%B %d, %Y')
-
-    if content_type == "workshop_promotion":
-        # ----- WORKSHOP PROMOTION PROMPT -----
-        # Here the Excel columns are re-interpreted:
-        #   Company Name    -> University / College / Institution name
-        #   Job Position    -> Workshop title / topic (if provided)
-        #   Job Description  -> Any extra context about the institution or workshop
-        # The resume is treated as the presenter's / organizer's credentials.
-        prompt_text = f"""
+WORKSHOP_PROMPT_TEMPLATE = """
     You are an experienced academic-outreach and partnerships specialist. Your job is to write a
     warm, professional, and genuinely persuasive **promotional email** that invites a university or
     college to **host a workshop for their students**. You are OFFERING value to the institution —
@@ -535,7 +546,7 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
     ------------------------------------------------------------
     - Warm, confident, respectful, and student-focused — the voice of a knowledgeable professional offering a genuine opportunity, not a salesperson and not a job applicant.
     - Persuasive but never pushy or exaggerated. Avoid hype and empty clichés (e.g., "world-class", "revolutionary", "passionate about") unless the resume clearly supports them.
-    - Concise and skimmable: two short paragraphs plus a greeting and sign-off, roughly 120–180 words.
+    - Concise and skimmable: two short paragraphs plus a greeting and sign-off, roughly 120-180 words.
     - Personalize using the institution's website insights above when they are available, so the email feels tailored rather than mass-produced.
 
     ------------------------------------------------------------
@@ -548,111 +559,65 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
     - Do NOT include LinkedIn or any social profiles.
     - Return ONLY the finished email body, ready to send — no explanations, notes, headings, or markdown code fences.
     """
-    else:
-        # ----- JOB APPLICATION PROMPT (original behaviour) -----
-        prompt_text = f"""
-    You are a **highly precise and fact-based** job application assistant. 
-    Your task is to generate a **truthful, concise, and professional** cover letter based **ONLY on the provided resume**.
 
-    **Candidate Details:**
-    - **Name:** [Name from {resume_text}]
-    - **Address:** [Address from {resume_text}]
-    - **Phone Number:** [Phone Number from {resume_text}]
-    - **Date:** {current_date}
+PROMPT_PLACEHOLDERS = ["company_name", "job_position", "job_description",
+                       "resume_text", "website_section", "current_date"]
 
-    **Job Application Details:**
-    - **Company:** {company_name}
-    - **Position:** {job_position}
-    - **Job Description:** {job_description}
 
-    **Candidate's Resume:**
-    {resume_text}
+def render_prompt(template, values):
+    """Fill {placeholders} via literal replacement so stray braces in resume/job
+    text can never break prompt building."""
+    out = template
+    for key in PROMPT_PLACEHOLDERS:
+        out = out.replace("{" + key + "}", str(values.get(key, "") or ""))
+    return out
 
-    {website_section}
 
-    **STRICT RULES:**
-    - **DO NOT fabricate any experiences, degrees, or skills that are NOT present in the resume.**
-    - **Only extract relevant skills and qualifications from the resume text above.**
-    - **If a required skill is missing, acknowledge it politely and express eagerness to learn.**
-    - **No generic statements like "passionate about teaching" unless proven from the resume.**
-    - **If website insights are available, integrate them naturally.**
-    - **Do not include LinkedIn Profile in the cover letter**
-    - **No more than TWO paragraphs.**
-
-    **Example Cover Letter Structure:**
-    
-    Dear Hiring Team of {company_name},
-
-    I am excited to apply for the {job_position} role at {company_name}. My background in **[relevant expertise from {resume_text}]** has enabled me to **[explain how your experience aligns with job responsibilities]**. {website_section}
-
-    I look forward to the opportunity to discuss how my expertise in **[relevant experience in {resume_text}]** can contribute to **[company's goal or project mentioned in job description]**.
-
-    Sincerely,  
-    [Name from {resume_text}] 
-    [City, Country from Address in {resume_text}]
-    Phone: [Phone number from {resume_text}]
-    
+def generate_cover_letter(company_name, job_position, job_description, website_info,
+                          resume_text, llm_provider, content_type="job_application",
+                          custom_prompt=None):
     """
+    Generate a cover letter / workshop email.
+    If custom_prompt is provided (non-empty), it is used instead of the built-in
+    template; placeholders like {company_name} are still filled in.
+    """
+    if not llm_provider:
+        llm_provider = "openai"
 
-    # Runtime proof of which prompt was selected (visible in the server console).
-    mode_label = "WORKSHOP PROMOTION" if content_type == "workshop_promotion" else "JOB APPLICATION"
+    llm = initialize_llm(llm_provider)
+
+    if website_info and str(website_info).strip():
+        website_section = f"I reviewed {company_name}'s website and was particularly drawn to {website_info}."
+    else:
+        website_section = ""
+
+    current_date = datetime.today().strftime('%B %d, %Y')
+
+    values = {
+        "company_name": company_name,
+        "job_position": job_position,
+        "job_description": job_description,
+        "resume_text": resume_text,
+        "website_section": website_section,
+        "current_date": current_date,
+    }
+
+    if custom_prompt and custom_prompt.strip():
+        template = custom_prompt
+        mode_label = "CUSTOM PROMPT"
+    elif content_type == "workshop_promotion":
+        template = WORKSHOP_PROMPT_TEMPLATE
+        mode_label = "WORKSHOP PROMOTION"
+    else:
+        template = JOB_PROMPT_TEMPLATE
+        mode_label = "JOB APPLICATION"
+
+    final_prompt = render_prompt(template, values)
+
     print(f"📝 [{mode_label}] provider={llm_provider} | {company_name} - {job_position}")
 
-    prompt = ChatPromptTemplate.from_template(prompt_text)
-
-    # Create an LLM Chain using LangChain
-    #chain = prompt | llm
-    #response = chain.invoke({
-        #"company_name": company_name,
-        #"job_position": job_position,
-        #"job_description": job_description,
-        #"resume_text": resume_text,  # Explicitly passing the extracted resume
-        #"website_info_integration": website_section,
-    #})
-
-    #return response.content  # Extract the generated cover letter
-
-    if llm_provider == "deepseek":
-        chain = prompt | llm
-
-    # Pass input variables to the model
-        response = chain.invoke({
-        "company_name": company_name,
-        "job_position": job_position,
-        "job_description": job_description,
-        "resume_text": resume_text,  # Explicitly passing the extracted resume
-        "website_info_integration": website_section,
-        })
-
-        #print(f"✅ Finished cover letter for {company_name} - {job_position}")
-
-        return response.content
-    
-    elif llm_provider == "gemini":
-        chain = prompt | llm
-
-    # Pass input variables to the model
-        response = chain.invoke({
-        "company_name": company_name,
-        "job_position": job_position,
-        "job_description": job_description,
-        "resume_text": resume_text,  # Explicitly passing the extracted resume
-        "website_info_integration": website_section,
-        })
-
-        return response.content
-    
-    else:
-        chain = prompt | llm
-        response = chain.invoke({
-        "company_name": company_name,
-        "job_position": job_position,
-        "job_description": job_description,
-        "resume_text": resume_text,  # Explicitly passing the extracted resume
-        "website_info_integration": website_section,
-    })
-        return response.content
-
+    response = llm.invoke(final_prompt)
+    return response.content
 
 import json
 
@@ -665,7 +630,7 @@ def upload_files():
 
     if request.method == 'POST':
         # Instead of session.clear(), selectively remove only upload-related keys
-        for key in ["email_path", "resume_paths", "emails_data", "workshop_image_path"]:
+        for key in ["email_path", "resume_paths", "emails_data", "workshop_image_path", "custom_prompt"]:
             session.pop(key, None)
 
 
@@ -701,6 +666,11 @@ def upload_files():
         session['email_path'] = email_path
         session['resume_paths'] = resume_paths  # Keep only file paths in session
 
+        # Optional custom prompt (advanced users can override the default template)
+        custom_prompt = (request.form.get('custom_prompt') or '').strip()
+        if custom_prompt:
+            session['custom_prompt'] = custom_prompt
+
         # Optional workshop banner image — embedded inline in workshop emails.
         workshop_image = request.files.get('workshop_image')
         if workshop_image and workshop_image.filename:
@@ -710,7 +680,9 @@ def upload_files():
 
         return jsonify({"success": True, "message": "Files uploaded successfully!"})
 
-    return render_template('upload.html')
+    return render_template('upload.html',
+                           job_prompt=JOB_PROMPT_TEMPLATE,
+                           workshop_prompt=WORKSHOP_PROMPT_TEMPLATE)
 
 def is_relevant_resume(job_description, resume_text):
     """
@@ -864,7 +836,7 @@ def cell_at(row, i):
         return ""
 
 
-def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application"):
+def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application", custom_prompt=None):
     """
     Background worker: reads the Excel, picks ONE resume per row, then generates a
     letter with EVERY active provider so the user can compare them in tabs.
@@ -933,7 +905,8 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
                         website_info,
                         best_resume_text,
                         provider,
-                        content_type
+                        content_type,
+                        custom_prompt
                     )
                 except Exception as e:
                     print(f"❌ {provider} failed for {job_position}: {e}")
@@ -977,6 +950,9 @@ def generate_cover_letters():
     content_type = request.args.get('content_type') or session.get('content_type', 'job_application')
     session['content_type'] = content_type
 
+    # Optional custom prompt the user typed on the upload page (blank -> use defaults)
+    custom_prompt = session.get('custom_prompt') or None
+
     if not email_path or not resume_paths:
         return jsonify({"success": False, "message": "Please upload Excel and resumes first."}), 400
 
@@ -996,7 +972,7 @@ def generate_cover_letters():
     # Start a background thread to process this job
     t = Thread(
         target=process_cover_letter_job,
-        args=(job_id, email_path, resume_paths, content_type),
+        args=(job_id, email_path, resume_paths, content_type, custom_prompt),
         daemon=True
     )
     t.start()

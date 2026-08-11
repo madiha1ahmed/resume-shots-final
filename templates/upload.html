@@ -54,6 +54,41 @@
                 <small class="text-muted">This image is placed <strong>inside the email body</strong> (not as an attachment).</small>
             </div>
 
+            <!-- Advanced: custom prompt (optional) -->
+            <div class="mb-3">
+                <button class="btn btn-link p-0" type="button" data-bs-toggle="collapse"
+                        data-bs-target="#customPromptBox" aria-expanded="false">
+                    ⚙️ Advanced: use your own AI prompt (optional)
+                </button>
+                <div class="collapse" id="customPromptBox">
+                    <div class="border rounded p-3 mt-2 bg-light">
+                        <p class="mb-2 text-muted" style="font-size:.9rem;">
+                            Leave this blank to use the built-in prompt. To test your own, paste a prompt below.
+                            You can use these placeholders and they'll be filled in automatically:
+                        </p>
+                        <p class="mb-2" style="font-size:.85rem;">
+                            <code>{company_name}</code> <code>{job_position}</code> <code>{job_description}</code>
+                            <code>{resume_text}</code> <code>{website_section}</code> <code>{current_date}</code>
+                        </p>
+                        <div class="d-flex gap-2 mb-2">
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="loadDefaultPromptBtn">
+                                Load default template
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="clearPromptBtn">
+                                Clear
+                            </button>
+                        </div>
+                        <textarea class="form-control" name="custom_prompt" id="custom_prompt" rows="10"
+                                  placeholder="Leave blank to use the default prompt, or paste your own here…"
+                                  style="font-family:monospace;font-size:.85rem;"></textarea>
+                        <small class="text-muted">
+                            Tip: click “Load default template” to start from the current prompt for the
+                            selected content type, then tweak it.
+                        </small>
+                    </div>
+                </div>
+            </div>
+
             <button type="submit" id="uploadBtn" class="btn btn-primary">Upload</button>
         </form>
 
@@ -289,8 +324,25 @@
         imageInput.addEventListener("change", renderImage);
         contentTypeSel.addEventListener("change", toggleWorkshopImage);
         toggleWorkshopImage();  // set initial state on page load
+
+        // ----- Custom prompt: load default template / clear -----
+        const DEFAULT_PROMPTS = {
+            job_application: {{ job_prompt | tojson }},
+            workshop_promotion: {{ workshop_prompt | tojson }}
+        };
+        const customPromptBox = document.getElementById("custom_prompt");
+
+        document.getElementById("loadDefaultPromptBtn").addEventListener("click", function () {
+            const mode = contentTypeSel.value || "job_application";
+            customPromptBox.value = (DEFAULT_PROMPTS[mode] || "").trim();
+        });
+        document.getElementById("clearPromptBtn").addEventListener("click", function () {
+            customPromptBox.value = "";
+        });
     })();
 </script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 </body>
 </html>
