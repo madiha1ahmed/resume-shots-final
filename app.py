@@ -393,17 +393,28 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 # OpenRouter slug used only if no direct key is available:
 GEMINI_OPENROUTER_MODEL = os.getenv("GEMINI_OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
 
+def _supports_temp_zero(model_name):
+    """Some newer models (GPT-5.x, o-series) reject temperature=0 and only allow
+    the default. Only send temperature=0 for models that support it."""
+    m = (model_name or "").lower()
+    if m.startswith(("gpt-5", "o1", "o3", "o4", "gpt5")):
+        return False
+    return True
+
+
 def initialize_llm(llm_provider):
     if llm_provider == "deepseek":
         return ChatOpenAI(model=DEEPSEEK_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE, temperature=0)
     elif llm_provider == 'gemini':
         if GEMINI_API_KEY:
             # Direct Google Gemini API via its OpenAI-compatible endpoint
-            return ChatOpenAI(model=GEMINI_MODEL, openai_api_key=GEMINI_API_KEY, openai_api_base=GEMINI_OPENAI_BASE, temperature=0)
+            return ChatOpenAI(model=GEMINI_MODEL, openai_api_key=GEMINI_API_KEY, openai_api_base=GEMINI_OPENAI_BASE)
         # Fallback: route through OpenRouter
-        return ChatOpenAI(model=GEMINI_OPENROUTER_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE, temperature=0)
-    # Default to OpenAI
-    return ChatOpenAI(model=OPENAI_MODEL, openai_api_key=OPENAI_API_KEY, temperature=0)
+        return ChatOpenAI(model=GEMINI_OPENROUTER_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE)
+    # Default to OpenAI — only send temperature=0 if the model allows it.
+    if _supports_temp_zero(OPENAI_MODEL):
+        return ChatOpenAI(model=OPENAI_MODEL, openai_api_key=OPENAI_API_KEY, temperature=0)
+    return ChatOpenAI(model=OPENAI_MODEL, openai_api_key=OPENAI_API_KEY)
 
 
 #llm = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY)
@@ -563,6 +574,53 @@ WORKSHOP_PROMPT_TEMPLATE = """
 PROMPT_PLACEHOLDERS = ["company_name", "job_position", "job_description",
                        "resume_text", "website_section", "current_date"]
 
+# Appended to EVERY prompt (default or custom) so emails come out as clean plain text.
+OUTPUT_RULES = """
+
+------------------------------------------------------------
+OUTPUT FORMAT (STRICT — always follow, overrides anything above)
+------------------------------------------------------------
+- Write the finished email as PLAIN TEXT only. This will be sent as an email body.
+- Do NOT use any Markdown: no ** for bold, no * for italics/bullets, no # headings, no backticks, no tables.
+- Do NOT leave ANY placeholder in square brackets (e.g. [Name], [Company], [Address As Appropriate]).
+  Fill each one from the provided details, or drop the line entirely if the detail is missing.
+- Do NOT fabricate specific facts, statistics, URLs, article titles, or quotes. If you reference
+  general industry trends, keep them general — never invent a citation or link.
+- Return ONLY the email body — no preamble, no explanation, no notes about what you did.
+"""
+
+import re as _re
+
+# Appended automatically to a custom prompt that uses NO {placeholders},
+# so non-technical users can write plain instructions and still get all the data.
+AUTO_DATA_BLOCK = """------------------------------------------------------------
+USE THE FOLLOWING DETAILS (base the letter ONLY on these)
+------------------------------------------------------------
+Today's date: {current_date}
+Company / Institution: {company_name}
+Position / Workshop topic: {job_position}
+
+Job Description / Context:
+{job_description}
+
+Candidate's Resume (the only source of facts about the sender):
+{resume_text}
+
+{website_section}
+"""
+
+def clean_letter_output(text):
+    """Safety net: strip stray Markdown so emails don't show ** or # literally."""
+    if not text:
+        return text
+    out = text
+    out = out.replace("**", "").replace("__", "")   # bold markers
+    # remove leading markdown heading hashes on any line ("## Title" -> "Title")
+    out = _re.sub(r'(?m)^\s{0,3}#{1,6}\s*', '', out)
+    # strip markdown code fences if a model wrapped the whole thing
+    out = _re.sub(r'(?m)^\s*```[a-zA-Z]*\s*$', '', out)
+    return out.strip()
+
 
 def render_prompt(template, values):
     """Fill {placeholders} via literal replacement so stray braces in resume/job
@@ -603,8 +661,15 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
     }
 
     if custom_prompt and custom_prompt.strip():
-        template = custom_prompt
         mode_label = "CUSTOM PROMPT"
+        cp = custom_prompt.rstrip()
+        # Non-technical users can write plain instructions with NO {placeholders}.
+        # In that case, auto-append all the real details so the model still has them.
+        used_placeholder = any(("{" + k + "}") in cp for k in PROMPT_PLACEHOLDERS)
+        if used_placeholder:
+            template = cp
+        else:
+            template = cp + "\n\n" + AUTO_DATA_BLOCK
     elif content_type == "workshop_promotion":
         template = WORKSHOP_PROMPT_TEMPLATE
         mode_label = "WORKSHOP PROMOTION"
@@ -612,12 +677,12 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
         template = JOB_PROMPT_TEMPLATE
         mode_label = "JOB APPLICATION"
 
-    final_prompt = render_prompt(template, values)
+    final_prompt = render_prompt(template, values) + OUTPUT_RULES
 
     print(f"📝 [{mode_label}] provider={llm_provider} | {company_name} - {job_position}")
 
     response = llm.invoke(final_prompt)
-    return response.content
+    return clean_letter_output(response.content)
 
 import json
 

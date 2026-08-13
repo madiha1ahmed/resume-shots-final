@@ -63,10 +63,15 @@
                 <div class="collapse" id="customPromptBox">
                     <div class="border rounded p-3 mt-2 bg-light">
                         <p class="mb-2 text-muted" style="font-size:.9rem;">
-                            Leave this blank to use the built-in prompt. To test your own, paste a prompt below.
-                            You can use these placeholders and they'll be filled in automatically:
+                            Leave this blank to use the built-in prompt. To use your own, just write your
+                            instructions below in plain English — for example:
+                            <em>"Write a warm, enthusiastic cover letter that emphasises leadership and keeps it under 200 words."</em>
+                            The company name, job position, job description, resume and website are added
+                            automatically, so you don't need any special codes.
                         </p>
-                        <p class="mb-2" style="font-size:.85rem;">
+                        <p class="mb-2 text-muted" style="font-size:.8rem;">
+                            Optional (advanced): if you want precise control over where each detail goes, you can
+                            place these codes anywhere in your prompt and they'll be filled in:
                             <code>{company_name}</code> <code>{job_position}</code> <code>{job_description}</code>
                             <code>{resume_text}</code> <code>{website_section}</code> <code>{current_date}</code>
                         </p>
@@ -79,11 +84,11 @@
                             </button>
                         </div>
                         <textarea class="form-control" name="custom_prompt" id="custom_prompt" rows="10"
-                                  placeholder="Leave blank to use the default prompt, or paste your own here…"
-                                  style="font-family:monospace;font-size:.85rem;"></textarea>
+                                  placeholder="e.g. Write a warm, professional cover letter that highlights my leadership experience and keeps it to two short paragraphs."
+                                  style="font-size:.9rem;"></textarea>
                         <small class="text-muted">
-                            Tip: click “Load default template” to start from the current prompt for the
-                            selected content type, then tweak it.
+                            Tip: just describe the style and tone you want. Or click “Load default template”
+                            to start from the current prompt and tweak it.
                         </small>
                     </div>
                 </div>
