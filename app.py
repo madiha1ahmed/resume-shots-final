@@ -41,6 +41,7 @@ import time
 
 
 from threading import Thread
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 
 JOBS = {}  # job_id -> {"status": ..., "progress": ..., "total": ..., "emails_data": [], "error": None}
@@ -411,10 +412,12 @@ def initialize_llm(llm_provider):
             return ChatOpenAI(model=GEMINI_MODEL, openai_api_key=GEMINI_API_KEY, openai_api_base=GEMINI_OPENAI_BASE)
         # Fallback: route through OpenRouter
         return ChatOpenAI(model=GEMINI_OPENROUTER_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE)
-    # Default to OpenAI — only send temperature=0 if the model allows it.
-    if _supports_temp_zero(OPENAI_MODEL):
-        return ChatOpenAI(model=OPENAI_MODEL, openai_api_key=OPENAI_API_KEY, temperature=0)
-    return ChatOpenAI(model=OPENAI_MODEL, openai_api_key=OPENAI_API_KEY)
+    # Default to OpenAI.
+    # NOTE: langchain's ChatOpenAI defaults temperature to 0.7 and ALWAYS sends it,
+    # so we must set it explicitly. GPT-5.x / o-series only accept the default (1);
+    # older models accept 0 (deterministic).
+    temp_value = 0 if _supports_temp_zero(OPENAI_MODEL) else 1
+    return ChatOpenAI(model=OPENAI_MODEL, openai_api_key=OPENAI_API_KEY, temperature=temp_value)
 
 
 #llm = ChatOpenAI(model="gpt-4o", openai_api_key=OPENAI_API_KEY)
@@ -846,9 +849,9 @@ def select_best_resume(job_description, resume_texts, llm_provider):
 # --- Providers we generate with, and the labels shown on the review tabs ---
 ALL_PROVIDERS = ["openai", "deepseek", "gemini"]
 PROVIDER_LABELS = {
-    "openai": "ChatGPT (GPT-4o)",
-    "deepseek": "DeepSeek-V3",
-    "gemini": "Gemini 2.0 Flash",
+    "openai": "ChatGPT",
+    "deepseek": "Kimi K3",
+    "gemini": "Gemini 3.6 Flash",
 }
 
 def get_active_providers():
@@ -959,26 +962,29 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
             # Optional website info
             website_info = fetch_website_info(company_website) if company_website else None
 
-            # Generate one letter per provider.
+            # Generate letters for all providers IN PARALLEL (each is a network call,
+            # so running them together makes each row take ~the slowest provider's time
+            # instead of the sum of all three).
             cover_letters = {}
-            for provider in providers:
+
+            def _gen(provider):
                 try:
-                    cover_letters[provider] = generate_cover_letter(
-                        company_name,
-                        job_position,
-                        job_description,
-                        website_info,
-                        best_resume_text,
-                        provider,
-                        content_type,
-                        custom_prompt
+                    return provider, generate_cover_letter(
+                        company_name, job_position, job_description,
+                        website_info, best_resume_text, provider,
+                        content_type, custom_prompt
                     )
                 except Exception as e:
                     print(f"❌ {provider} failed for {job_position}: {e}")
-                    cover_letters[provider] = f"[{provider} could not generate this letter: {e}]"
+                    return provider, f"[{provider} could not generate this letter: {e}]"
 
-                done_steps += 1
-                JOBS[job_id]["progress"] = done_steps
+            with ThreadPoolExecutor(max_workers=len(providers)) as ex:
+                futures = [ex.submit(_gen, p) for p in providers]
+                for fut in as_completed(futures):
+                    provider, letter = fut.result()
+                    cover_letters[provider] = letter
+                    done_steps += 1
+                    JOBS[job_id]["progress"] = done_steps
 
             emails_data.append({
                 'recipient_email': recipient_email,
