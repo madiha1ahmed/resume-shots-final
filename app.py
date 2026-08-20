@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for, session, send_from_directory, jsonify
 import os
+import re
 from flask import Flask, session
 from flask_session import Session
 import pandas as pd
@@ -433,37 +434,198 @@ def extract_text_from_pdf(pdf_path):
 
 current_date = datetime.today().strftime('%B %d, %Y')
 
-def fetch_website_info(website_url):
-    """Fetches the main content of a company's website to personalize the cover letter."""
-    # Blank cells from Excel come through as NaN (a float) or None — coerce safely
-    # so we never call string methods on a non-string.
+def fetch_website_info(website_url, max_chars=1600):
+    """Fetch a company's site and return a useful summary (title, description,
+    key headings, and real paragraph text) — not just the first <p> tag."""
     if website_url is None:
         return None
     website_url = str(website_url).strip()
     if (not website_url
             or website_url.lower() in ("nan", "none", "n/a")
             or not website_url.startswith("http")):
-        return None  # Ensure the website URL is valid
+        return None
 
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        response = requests.get(website_url, headers=headers, timeout=10)
+        response = requests.get(website_url, headers=headers, timeout=12)
+        if response.status_code != 200:
+            return None
 
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
-            paragraphs = soup.find_all("p")
-            if paragraphs:
-                return paragraphs[0].get_text().strip()
-            headers = soup.find_all(["h1", "h2"])
-            if headers:
-                return headers[0].get_text().strip()
+        soup = BeautifulSoup(response.text, "html.parser")
+        # Strip noise so we don't summarise scripts / menus / footers
+        for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "form", "svg"]):
+            tag.decompose()
+
+        parts = []
+        if soup.title and soup.title.get_text(strip=True):
+            parts.append("Title: " + soup.title.get_text(strip=True))
+
+        meta = (soup.find("meta", attrs={"name": "description"})
+                or soup.find("meta", attrs={"property": "og:description"}))
+        if meta and meta.get("content"):
+            parts.append("Description: " + meta["content"].strip())
+
+        heads = [h.get_text(" ", strip=True) for h in soup.find_all(["h1", "h2"])]
+        heads = [h for h in heads if h][:6]
+        if heads:
+            parts.append("Key sections: " + " | ".join(heads))
+
+        paras, total = [], 0
+        for p in soup.find_all("p"):
+            t = p.get_text(" ", strip=True)
+            if len(t) > 60:                      # skip tiny/nav bits
+                paras.append(t)
+                total += len(t)
+                if total > max_chars:
+                    break
+        if paras:
+            parts.append("About: " + " ".join(paras))
+
+        summary = "\n".join(parts).strip()
+        return summary[:max_chars] if summary else None
 
     except requests.RequestException:
         return None
+    except Exception:
+        return None
 
-    return None
+
+# ---- Optional live web search (company research + topical lookups) ----
+# Works out of the box with DuckDuckGo (no key). For reliability, set TAVILY_API_KEY
+# or SERPER_API_KEY and it'll use that instead. Turn off with WEB_SEARCH=false.
+WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH", "true").lower() not in ("false", "0", "no", "off")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+
+def web_search_summary(query, max_results=4, max_chars=1200):
+    """Return a short text digest of live web results for `query`, or None.
+    Never raises — if search is unavailable, letters still generate without it."""
+    if not WEB_SEARCH_ENABLED or not query or not query.strip():
+        return None
+    try:
+        if TAVILY_API_KEY:
+            r = requests.post("https://api.tavily.com/search", timeout=20, json={
+                "api_key": TAVILY_API_KEY, "query": query,
+                "max_results": max_results, "include_answer": True, "search_depth": "advanced"})
+            print(f"🔎 Tavily status={r.status_code} query={query[:70]!r}")
+            if r.status_code == 200:
+                data = r.json()
+                bits = []
+                if data.get("answer"):
+                    bits.append(data["answer"])
+                for it in (data.get("results") or [])[:max_results]:
+                    if it.get("content"):
+                        bits.append(f"{it.get('title','')}: {it['content']}")
+                out = "\n".join(b for b in bits if b).strip()
+                print(f"🔎 Tavily returned {len(out)} chars")
+                return out[:max_chars] or None
+            else:
+                print(f"⚠️ Tavily non-200: {r.text[:200]}")
+                # fall through to other backends
+
+        if SERPER_API_KEY:
+            r = requests.post("https://google.serper.dev/search", timeout=15,
+                headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                json={"q": query, "num": max_results})
+            if r.status_code == 200:
+                data = r.json()
+                bits = []
+                for it in (data.get("organic") or [])[:max_results]:
+                    if it.get("snippet"):
+                        bits.append(f"{it.get('title','')}: {it['snippet']}")
+                out = "\n".join(bits).strip()
+                return out[:max_chars] or None
+
+        # Keyless fallback: DuckDuckGo (best-effort; may be rate-limited)
+        try:
+            try:
+                from ddgs import DDGS
+            except ImportError:
+                from duckduckgo_search import DDGS
+            bits = []
+            with DDGS() as ddgs:
+                for it in ddgs.text(query, max_results=max_results):
+                    if it.get("body"):
+                        bits.append(f"{it.get('title','')}: {it['body']}")
+            out = "\n".join(bits).strip()
+            return out[:max_chars] or None
+        except Exception as e:
+            print(f"ℹ️ web search unavailable: {e}")
+            return None
+
+    except Exception as e:
+        print(f"ℹ️ web search error: {e}")
+        return None
+
+
+def extract_search_queries(custom_prompt, company_name, job_position):
+    """If a custom prompt explicitly asks to 'search the internet/web/net for X',
+    pull out concise query phrases so we can actually run those searches."""
+    if not custom_prompt:
+        return []
+    trigger = re.compile(
+        r'search(?:\s+the)?\s+(?:internet|net|web|online)\b(.*?)(?:\]|\.\s|\.$|$)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    queries = []
+    for m in trigger.finditer(custom_prompt):
+        phrase = m.group(1) or ""
+        # Replace placeholders with SHORT query-friendly values (never the huge blobs)
+        phrase = phrase.replace("{job_description}", job_position or "")
+        phrase = phrase.replace("{job_position}", job_position or "")
+        phrase = phrase.replace("{company_name}", company_name or "")
+        phrase = re.sub(r'\{[a-zA-Z_]+\}', ' ', phrase)          # drop other placeholders
+        phrase = re.sub(r'\band provide an example\b', ' ', phrase, flags=re.IGNORECASE)
+        phrase = re.sub(r'[\[\]]', ' ', phrase)
+        phrase = re.sub(r'\s+', ' ', phrase).strip(" -–—:,.\"'")
+        if len(phrase) >= 8:
+            queries.append(phrase[:180])
+    return queries[:3]                                          # cap the number of searches
+
+
+def gather_company_context(company_name, company_website, job_position, custom_prompt=None):
+    """Combine the provided company website, a live web search about the employer,
+    and any 'search the internet for X' requests inside a custom prompt into one
+    research block the AI can use. Returns '' if nothing found."""
+    parts = []
+
+    site = fetch_website_info(company_website)
+    if site:
+        parts.append(f"About {company_name} (from their own website):\n{site}")
+
+    query = " ".join(x for x in [company_name, job_position] if x).strip()
+    web = web_search_summary(query)
+    if web:
+        parts.append(f"Recent web search results about {company_name} / {job_position}:\n{web}")
+
+    # Honour explicit "search the internet for ..." instructions in a custom prompt
+    topical_queries = extract_search_queries(custom_prompt, company_name, job_position)
+    if topical_queries:
+        print(f"🔎 Prompt requested internet search(es): {topical_queries}")
+    else:
+        print("🔎 No 'search the internet' instruction detected in the prompt.")
+    for q in topical_queries:
+        res = web_search_summary(q, max_results=5)
+        print(f"🔎 Topical search result for {q[:60]!r}: "
+              f"{('HIT ' + str(len(res)) + ' chars') if res else 'NO RESULTS'}")
+        if res:
+            parts.append(f"Web research on the requested topic \"{q}\" "
+                         f"(use a concrete example from this):\n{res}")
+
+    if not parts:
+        print("📚 No research gathered (no website info and no search results).")
+        return ""
+
+    block = ("BACKGROUND RESEARCH — real, current information gathered from the web. "
+             "Weave in the relevant, specific details naturally (including any examples the "
+             "prompt asked you to find). Do NOT copy it verbatim and do NOT invent anything "
+             "beyond what is here:\n\n"
+             + "\n\n".join(parts) + "\n")
+    print(f"📚 Research block built: {len(block)} chars, {len(parts)} source(s).")
+    return block
 
 # Generate AI-based cover letter
 # =========================================================================
@@ -587,8 +749,9 @@ OUTPUT FORMAT (STRICT — always follow, overrides anything above)
 - Do NOT use any Markdown: no ** for bold, no * for italics/bullets, no # headings, no backticks, no tables.
 - Do NOT leave ANY placeholder in square brackets (e.g. [Name], [Company], [Address As Appropriate]).
   Fill each one from the provided details, or drop the line entirely if the detail is missing.
-- Do NOT fabricate specific facts, statistics, URLs, article titles, or quotes. If you reference
-  general industry trends, keep them general — never invent a citation or link.
+- Do NOT fabricate facts beyond the details and the BACKGROUND RESEARCH provided above.
+  You MAY use specific facts from that research to personalise the letter, but never invent
+  a statistic, citation, URL, article title, or quote that is not present in what you were given.
 - Return ONLY the email body — no preamble, no explanation, no notes about what you did.
 """
 
@@ -647,8 +810,10 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
 
     llm = initialize_llm(llm_provider)
 
+    # website_info now holds a full research block (website + web search), already
+    # formatted by gather_company_context(). Use it as-is; blank if nothing found.
     if website_info and str(website_info).strip():
-        website_section = f"I reviewed {company_name}'s website and was particularly drawn to {website_info}."
+        website_section = str(website_info)
     else:
         website_section = ""
 
@@ -951,6 +1116,14 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
             job_description = cell_at(row, 3)
             company_website = cell_at(row, 4)
 
+            # Skip blank / trailing rows: if there's no recipient email AND no company,
+            # this row has no real data — don't waste API calls generating junk.
+            if not recipient_email and not company_name:
+                print(f"⏭️  Skipping blank row {index + 1} (no email / company).")
+                done_steps += len(providers)
+                JOBS[job_id]["progress"] = done_steps
+                continue
+
             # Pick ONE resume for this row; the same resume appears in every provider tab.
             best_resume_filename = select_best_resume(job_description, resume_texts, selection_provider)
             if not best_resume_filename and resume_texts:
@@ -960,7 +1133,9 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
             best_resume_text = resume_texts.get(best_resume_filename, "")
 
             # Optional website info
-            website_info = fetch_website_info(company_website) if company_website else None
+            # Gather real research about the employer (their website + a live web
+            # search) once per row — shared across all three providers.
+            website_info = gather_company_context(company_name, company_website, job_position, custom_prompt)
 
             # Generate letters for all providers IN PARALLEL (each is a network call,
             # so running them together makes each row take ~the slowest provider's time
