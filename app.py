@@ -406,13 +406,17 @@ def _supports_temp_zero(model_name):
 
 def initialize_llm(llm_provider):
     if llm_provider == "deepseek":
-        return ChatOpenAI(model=DEEPSEEK_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE, temperature=0)
+        # Cap max_tokens — otherwise LangChain reserves the model's full 65k window,
+        # which triggers OpenRouter 402s on a low balance. A letter needs far less.
+        return ChatOpenAI(model=DEEPSEEK_MODEL, openai_api_key=OPENROUTER_API_KEY,
+                          openai_api_base=OPENROUTER_BASE, temperature=0, max_tokens=2000)
     elif llm_provider == 'gemini':
         if GEMINI_API_KEY:
             # Direct Google Gemini API via its OpenAI-compatible endpoint
-            return ChatOpenAI(model=GEMINI_MODEL, openai_api_key=GEMINI_API_KEY, openai_api_base=GEMINI_OPENAI_BASE)
+            return ChatOpenAI(model=GEMINI_MODEL, openai_api_key=GEMINI_API_KEY, openai_api_base=GEMINI_OPENAI_BASE, max_tokens=2000)
         # Fallback: route through OpenRouter
-        return ChatOpenAI(model=GEMINI_OPENROUTER_MODEL, openai_api_key=OPENROUTER_API_KEY, openai_api_base=OPENROUTER_BASE)
+        return ChatOpenAI(model=GEMINI_OPENROUTER_MODEL, openai_api_key=OPENROUTER_API_KEY,
+                          openai_api_base=OPENROUTER_BASE, max_tokens=2000)
     # Default to OpenAI.
     # NOTE: langchain's ChatOpenAI defaults temperature to 0.7 and ALWAYS sends it,
     # so we must set it explicitly. GPT-5.x / o-series only accept the default (1);
@@ -608,8 +612,11 @@ def gather_company_context(company_name, company_website, job_position, custom_p
     else:
         print("🔎 No 'search the internet' instruction detected in the prompt.")
     for q in topical_queries:
-        res = web_search_summary(q, max_results=5)
-        print(f"🔎 Topical search result for {q[:60]!r}: "
+        # Add the employer name so the search is grounded in the right domain
+        # (e.g. "...transforming to operations Apollo Hospitals" -> healthcare results).
+        q_full = f"{q} {company_name}".strip() if company_name else q
+        res = web_search_summary(q_full, max_results=5)
+        print(f"🔎 Topical search result for {q_full[:70]!r}: "
               f"{('HIT ' + str(len(res)) + ' chars') if res else 'NO RESULTS'}")
         if res:
             parts.append(f"Web research on the requested topic \"{q}\" "
@@ -737,7 +744,8 @@ WORKSHOP_PROMPT_TEMPLATE = """
     """
 
 PROMPT_PLACEHOLDERS = ["company_name", "job_position", "job_description",
-                       "resume_text", "website_section", "current_date"]
+                       "resume_text", "website_section", "current_date",
+                       "recipient_name"]
 
 # Appended to EVERY prompt (default or custom) so emails come out as clean plain text.
 OUTPUT_RULES = """
@@ -763,6 +771,7 @@ AUTO_DATA_BLOCK = """-----------------------------------------------------------
 USE THE FOLLOWING DETAILS (base the letter ONLY on these)
 ------------------------------------------------------------
 Today's date: {current_date}
+Recipient's name (greet them with this): {recipient_name}
 Company / Institution: {company_name}
 Position / Workshop topic: {job_position}
 
@@ -799,11 +808,12 @@ def render_prompt(template, values):
 
 def generate_cover_letter(company_name, job_position, job_description, website_info,
                           resume_text, llm_provider, content_type="job_application",
-                          custom_prompt=None):
+                          custom_prompt=None, recipient_name=None):
     """
     Generate a cover letter / workshop email.
     If custom_prompt is provided (non-empty), it is used instead of the built-in
     template; placeholders like {company_name} are still filled in.
+    recipient_name (from the First/Last name columns) is used to greet the person.
     """
     if not llm_provider:
         llm_provider = "openai"
@@ -826,7 +836,17 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
         "resume_text": resume_text,
         "website_section": website_section,
         "current_date": current_date,
+        "recipient_name": recipient_name or "",
     }
+
+    # If we have the recipient's name, tell the model to greet them by it.
+    greeting_note = ""
+    if recipient_name and recipient_name.strip():
+        greeting_note = (
+            f"\n\nIMPORTANT: Address the email personally to the recipient by name — "
+            f"begin with \"Dear {recipient_name},\". Do not use a generic greeting "
+            f"like \"Dear Hiring Team\" or \"Dear Sir/Madam\"."
+        )
 
     if custom_prompt and custom_prompt.strip():
         mode_label = "CUSTOM PROMPT"
@@ -845,7 +865,7 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
         template = JOB_PROMPT_TEMPLATE
         mode_label = "JOB APPLICATION"
 
-    final_prompt = render_prompt(template, values) + OUTPUT_RULES
+    final_prompt = render_prompt(template, values) + greeting_note + OUTPUT_RULES
 
     print(f"📝 [{mode_label}] provider={llm_provider} | {company_name} - {job_position}")
 
@@ -1115,6 +1135,10 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
             job_position    = cell_at(row, 2)
             job_description = cell_at(row, 3)
             company_website = cell_at(row, 4)
+            # Optional columns 6 & 7: First Name, Last Name (for a personalised greeting)
+            first_name      = cell_at(row, 5)
+            last_name       = cell_at(row, 6)
+            recipient_name  = " ".join(p for p in [first_name, last_name] if p).strip()
 
             # Skip blank / trailing rows: if there's no recipient email AND no company,
             # this row has no real data — don't waste API calls generating junk.
@@ -1147,7 +1171,7 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
                     return provider, generate_cover_letter(
                         company_name, job_position, job_description,
                         website_info, best_resume_text, provider,
-                        content_type, custom_prompt
+                        content_type, custom_prompt, recipient_name
                     )
                 except Exception as e:
                     print(f"❌ {provider} failed for {job_position}: {e}")
