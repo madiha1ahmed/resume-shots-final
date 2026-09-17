@@ -743,6 +743,56 @@ WORKSHOP_PROMPT_TEMPLATE = """
     - Return ONLY the finished email body, ready to send — no explanations, notes, headings, or markdown code fences.
     """
 
+INVESTOR_PROMPT_TEMPLATE = """
+    You are writing a concise, professional cold outreach email on behalf of a company (the SENDER)
+    to a venture capital investor or fund (the RECIPIENT). The goal is to spark genuine interest and
+    earn a short intro call — not to close funding in one email. This is NOT a job application.
+
+    ------------------------------------------------------------
+    THE SENDER — the company doing the outreach
+    ------------------------------------------------------------
+    Everything about the sender (company name, what they do, product, stage, traction, the founder /
+    contact, and any figures) must come ONLY from the profile document below. Do NOT invent a company
+    name, product, metric, or claim that is not in it. Extract the sender's company name and use it.
+
+    Sender profile:
+    {resume_text}
+
+    ------------------------------------------------------------
+    THE RECIPIENT — the investor being contacted
+    ------------------------------------------------------------
+    - Investor / fund: {company_name}
+    - Contact's role (if given): {job_position}
+    - Their investment focus / thesis / notes: {job_description}
+    - Today's date: {current_date}
+
+    {website_section}
+
+    ------------------------------------------------------------
+    WHAT THE EMAIL MUST DO (in order)
+    ------------------------------------------------------------
+    1. Greet the contact (a personalised greeting is added automatically if a name is available).
+    2. Open with a sharp, specific hook about the problem or opportunity the sender addresses —
+       never "I hope this email finds you well."
+    3. State clearly who the sender is and what they do, in plain language an investor understands.
+    4. Give the single strongest REAL proof point from the profile (traction, pilots, partners,
+       revenue) in one or two sentences. If no metric is in the profile, describe the opportunity
+       instead — do not invent numbers.
+    5. Connect explicitly to THIS investor's stated focus/thesis above — say why they are a strong fit.
+    6. Make ONE clear, low-friction ask: a 15–20 minute intro call.
+    7. Close warmly and professionally, signed with the sender's founder/contact name from the profile.
+
+    ------------------------------------------------------------
+    TONE & STRICT RULES
+    ------------------------------------------------------------
+    - Confident, credible, concise — aim for 130–170 words. Investors skim; respect their time.
+    - No hype words ("revolutionary", "world-class", "disruptive") and NO fabricated metrics,
+      citations, or claims. If a fact is not in the sender profile, do not state it.
+    - Personalise to the investor's thesis and firm; never send an obviously generic template.
+    - Do NOT include a subject line (it is added separately). No markdown, no bullets, no [brackets].
+    - Return ONLY the finished email body, ready to send.
+    """
+
 PROMPT_PLACEHOLDERS = ["company_name", "job_position", "job_description",
                        "resume_text", "website_section", "current_date",
                        "recipient_name"]
@@ -861,6 +911,9 @@ def generate_cover_letter(company_name, job_position, job_description, website_i
     elif content_type == "workshop_promotion":
         template = WORKSHOP_PROMPT_TEMPLATE
         mode_label = "WORKSHOP PROMOTION"
+    elif content_type == "investor_outreach":
+        template = INVESTOR_PROMPT_TEMPLATE
+        mode_label = "INVESTOR OUTREACH"
     else:
         template = JOB_PROMPT_TEMPLATE
         mode_label = "JOB APPLICATION"
@@ -935,7 +988,8 @@ def upload_files():
 
     return render_template('upload.html',
                            job_prompt=JOB_PROMPT_TEMPLATE,
-                           workshop_prompt=WORKSHOP_PROMPT_TEMPLATE)
+                           workshop_prompt=WORKSHOP_PROMPT_TEMPLATE,
+                           investor_prompt=INVESTOR_PROMPT_TEMPLATE)
 
 def is_relevant_resume(job_description, resume_text):
     """
@@ -1089,7 +1143,7 @@ def cell_at(row, i):
         return ""
 
 
-def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application", custom_prompt=None):
+def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application", custom_prompt=None, use_recipient_name=False):
     """
     Background worker: reads the Excel, picks ONE resume per row, then generates a
     letter with EVERY active provider so the user can compare them in tabs.
@@ -1138,7 +1192,11 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
             # Optional columns 6 & 7: First Name, Last Name (for a personalised greeting)
             first_name      = cell_at(row, 5)
             last_name       = cell_at(row, 6)
-            recipient_name  = " ".join(p for p in [first_name, last_name] if p).strip()
+            # Only build the personalised greeting name if the user enabled that option.
+            if use_recipient_name:
+                recipient_name = " ".join(p for p in [first_name, last_name] if p).strip()
+            else:
+                recipient_name = ""
 
             # Skip blank / trailing rows: if there's no recipient email AND no company,
             # this row has no real data — don't waste API calls generating junk.
@@ -1223,6 +1281,10 @@ def generate_cover_letters():
     # Optional custom prompt the user typed on the upload page (blank -> use defaults)
     custom_prompt = session.get('custom_prompt') or None
 
+    # Optional: address recipients by name (uses First/Last name columns)
+    use_recipient_name = (request.args.get('use_name', '').lower() == 'true')
+    session['use_recipient_name'] = use_recipient_name
+
     if not email_path or not resume_paths:
         return jsonify({"success": False, "message": "Please upload Excel and resumes first."}), 400
 
@@ -1242,7 +1304,7 @@ def generate_cover_letters():
     # Start a background thread to process this job
     t = Thread(
         target=process_cover_letter_job,
-        args=(job_id, email_path, resume_paths, content_type, custom_prompt),
+        args=(job_id, email_path, resume_paths, content_type, custom_prompt, use_recipient_name),
         daemon=True
     )
     t.start()
@@ -1421,6 +1483,10 @@ def send_email():
                     subject = f"Workshop Invitation: {topic}"
                 else:
                     subject = "Workshop Invitation for Your Students"
+            elif email_content_type == "investor_outreach":
+                firm = (email.get("company_name") or "").strip()
+                subject = f"Investment opportunity — introduction for {firm}" if firm \
+                    else "Investment opportunity — introduction"
             else:
                 subject = f"Job Application for {email['job_position']}"
 

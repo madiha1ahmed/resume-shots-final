@@ -21,7 +21,16 @@
                 <select class="form-control" name="content_type" id="content_type" required>
                     <option value="job_application" selected>Job Application (send to recruiters)</option>
                     <option value="workshop_promotion">Workshop Promotion (send to universities &amp; colleges)</option>
+                    <option value="investor_outreach">Investor Outreach (reach out to VCs / investors)</option>
                 </select>
+                <small class="text-muted">Choose what these emails are for — it sets how each one is written.</small>
+
+                <div class="form-check mt-3">
+                    <input class="form-check-input" type="checkbox" id="use_recipient_name" name="use_recipient_name">
+                    <label class="form-check-label" for="use_recipient_name">
+                        Address each recipient by name (uses the <strong>First Name</strong> &amp; <strong>Last Name</strong> columns, if present)
+                    </label>
+                </div>
                 <small class="text-muted">
                     This decides how each letter is written — a job cover letter, or a promotional
                     invitation to host your workshop.
@@ -154,10 +163,12 @@
         $("#progressBar").css("width", "0%").text("0%");
 
         const contentType = $("#content_type").val() || "job_application";
+        const useName = $("#use_recipient_name").is(":checked") ? "true" : "false";
 
         // 1) Start the job (no provider — all providers run automatically)
         $.ajax({
-            url: "/generate_cover_letters?content_type=" + encodeURIComponent(contentType),
+            url: "/generate_cover_letters?content_type=" + encodeURIComponent(contentType)
+                 + "&use_name=" + useName,
             type: "GET",
             success: function(response) {
                 if (response.success) {
@@ -333,7 +344,8 @@
         // ----- Custom prompt: load default template / clear -----
         const DEFAULT_PROMPTS = {
             job_application: {{ job_prompt | tojson }},
-            workshop_promotion: {{ workshop_prompt | tojson }}
+            workshop_promotion: {{ workshop_prompt | tojson }},
+            investor_outreach: {{ investor_prompt | tojson }}
         };
         const customPromptBox = document.getElementById("custom_prompt");
 
