@@ -835,7 +835,8 @@ Candidate's Resume (the only source of facts about the sender):
 """
 
 def clean_letter_output(text):
-    """Safety net: strip stray Markdown so emails don't show ** or # literally."""
+    """Safety net: strip stray Markdown and un-hard-wrap paragraphs so emails don't
+    show ** or # literally, and don't look like Enter was pressed on every line."""
     if not text:
         return text
     out = text
@@ -844,6 +845,26 @@ def clean_letter_output(text):
     out = _re.sub(r'(?m)^\s{0,3}#{1,6}\s*', '', out)
     # strip markdown code fences if a model wrapped the whole thing
     out = _re.sub(r'(?m)^\s*```[a-zA-Z]*\s*$', '', out)
+    # normalise line endings
+    out = out.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Un-hard-wrap: join a line into the next ONLY when the current line is long
+    # (a wrapped prose line). Short lines — greeting, signature, phone, city — are
+    # deliberate breaks and are left alone. Blank lines (paragraph breaks) stay.
+    WRAP_MIN = 62
+    lines = out.split("\n")
+    merged = []
+    for line in lines:
+        stripped = line.strip()
+        if (merged and merged[-1].strip() and stripped
+                and len(merged[-1].strip()) >= WRAP_MIN):
+            merged[-1] = merged[-1].rstrip() + " " + stripped
+        else:
+            merged.append(line)
+    out = "\n".join(merged)
+
+    # collapse 3+ blank lines to a single blank line between paragraphs
+    out = _re.sub(r'\n{3,}', '\n\n', out)
     return out.strip()
 
 
