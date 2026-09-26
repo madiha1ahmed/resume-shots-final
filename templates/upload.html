@@ -22,6 +22,7 @@
                     <option value="job_application" selected>Job Application (send to recruiters)</option>
                     <option value="workshop_promotion">Workshop Promotion (send to universities &amp; colleges)</option>
                     <option value="investor_outreach">Investor Outreach (reach out to VCs / investors)</option>
+                    <option value="template_fill">Template — fill in my ready-made email (no AI, saves tokens &amp; time)</option>
                 </select>
                 <small class="text-muted">Choose what these emails are for — it sets how each one is written.</small>
 
@@ -340,6 +341,28 @@
         imageInput.addEventListener("change", renderImage);
         contentTypeSel.addEventListener("change", toggleWorkshopImage);
         toggleWorkshopImage();  // set initial state on page load
+
+        // ----- Template mode: reuse the advanced box as the "email template" box -----
+        const advToggleBtn = document.querySelector('[data-bs-target="#customPromptBox"]');
+        const customBox     = document.getElementById("customPromptBox");
+        const customText    = document.getElementById("custom_prompt");
+        function toggleTemplateMode() {
+            const isTpl = contentTypeSel.value === "template_fill";
+            if (isTpl) {
+                // reveal the box and relabel it as a template box
+                if (customBox && !customBox.classList.contains("show")) {
+                    customBox.classList.add("show");
+                }
+                if (advToggleBtn) advToggleBtn.textContent = "📄 Your ready-made email template (required for this mode)";
+                if (customText) customText.placeholder =
+                    "Paste your ready-made email here. Use placeholders like {First Name}, {Company}, "
+                    + "{Position} — they'll be filled from your Excel automatically. No AI is used, so it's instant.";
+            } else if (advToggleBtn) {
+                advToggleBtn.textContent = "⚙️ Advanced: use your own AI prompt (optional)";
+            }
+        }
+        contentTypeSel.addEventListener("change", toggleTemplateMode);
+        toggleTemplateMode();
 
         // ----- Custom prompt: load default template / clear -----
         const DEFAULT_PROMPTS = {

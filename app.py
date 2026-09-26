@@ -835,8 +835,7 @@ Candidate's Resume (the only source of facts about the sender):
 """
 
 def clean_letter_output(text):
-    """Safety net: strip stray Markdown and un-hard-wrap paragraphs so emails don't
-    show ** or # literally, and don't look like Enter was pressed on every line."""
+    """Safety net: strip stray Markdown so emails don't show ** or # literally."""
     if not text:
         return text
     out = text
@@ -845,26 +844,6 @@ def clean_letter_output(text):
     out = _re.sub(r'(?m)^\s{0,3}#{1,6}\s*', '', out)
     # strip markdown code fences if a model wrapped the whole thing
     out = _re.sub(r'(?m)^\s*```[a-zA-Z]*\s*$', '', out)
-    # normalise line endings
-    out = out.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Un-hard-wrap: join a line into the next ONLY when the current line is long
-    # (a wrapped prose line). Short lines — greeting, signature, phone, city — are
-    # deliberate breaks and are left alone. Blank lines (paragraph breaks) stay.
-    WRAP_MIN = 62
-    lines = out.split("\n")
-    merged = []
-    for line in lines:
-        stripped = line.strip()
-        if (merged and merged[-1].strip() and stripped
-                and len(merged[-1].strip()) >= WRAP_MIN):
-            merged[-1] = merged[-1].rstrip() + " " + stripped
-        else:
-            merged.append(line)
-    out = "\n".join(merged)
-
-    # collapse 3+ blank lines to a single blank line between paragraphs
-    out = _re.sub(r'\n{3,}', '\n\n', out)
     return out.strip()
 
 
@@ -1112,6 +1091,7 @@ PROVIDER_LABELS = {
     "openai": "ChatGPT",
     "deepseek": "Kimi K3",
     "gemini": "Gemini 3.6 Flash",
+    "template": "Your Template",
 }
 
 def get_active_providers():
@@ -1164,6 +1144,111 @@ def cell_at(row, i):
         return ""
 
 
+# ---- TEMPLATE FILL MODE (no per-row AI = saves tokens) ----
+# A user pastes a ready-made email with placeholders; we just fill them from the
+# spreadsheet. Placeholders may be written {like_this}, [Like This], <like this>,
+# or {{like this}}, and may NOT match our column names — so we map them (heuristics
+# first, then ONE small AI call for anything unmatched) before filling every row.
+
+TEMPLATE_FIELDS = {
+    "recipient_email": ["email", "e-mail", "recipient", "to", "mail"],
+    "company_name":    ["company", "organisation", "organization", "org", "firm",
+                        "institution", "employer", "companyname", "business"],
+    "job_position":    ["position", "role", "title", "job", "jobtitle", "designation",
+                        "jobposition", "workshop", "topic"],
+    "job_description": ["description", "jobdescription", "about", "notes", "context",
+                        "thesis", "details"],
+    "website":         ["website", "url", "site", "web", "link"],
+    "first_name":      ["firstname", "first", "fname", "givenname"],
+    "last_name":       ["lastname", "last", "lname", "surname", "familyname"],
+    "recipient_name":  ["name", "fullname", "recipientname", "contact", "contactname",
+                        "person"],
+}
+
+def find_template_placeholders(template):
+    """Return the list of distinct placeholder tokens found in the template."""
+    if not template:
+        return []
+    found = []
+    # {{x}} and {x}
+    for m in _re.findall(r'\{\{?\s*([^{}]+?)\s*\}?\}', template):
+        found.append(m.strip())
+    # [x]
+    for m in _re.findall(r'\[\s*([^\[\]]+?)\s*\]', template):
+        found.append(m.strip())
+    # <x> (avoid HTML-ish tags with no spaces like </p>)
+    for m in _re.findall(r'<\s*([A-Za-z][^<>]*?)\s*>', template):
+        if not m.startswith("/"):
+            found.append(m.strip())
+    # de-dupe, keep order
+    seen, out = set(), []
+    for f in found:
+        k = f.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(f)
+    return out
+
+def _heuristic_field(placeholder):
+    """Best-effort match of a placeholder to a known field, by keyword."""
+    p = _re.sub(r'[^a-z]', '', placeholder.lower())
+    for field, syns in TEMPLATE_FIELDS.items():
+        norm = [_re.sub(r'[^a-z]', '', s) for s in syns] + [field.replace("_", "")]
+        if any(p == n or (len(p) > 2 and (p in n or n in p)) for n in norm):
+            return field
+    return None
+
+def map_placeholders(placeholders):
+    """Map each placeholder -> known field. Heuristics first; ONE AI call resolves
+    whatever is left (so we spend at most a single small request per batch)."""
+    mapping, unmatched = {}, []
+    for ph in placeholders:
+        f = _heuristic_field(ph)
+        if f:
+            mapping[ph] = f
+        else:
+            unmatched.append(ph)
+
+    if unmatched:
+        try:
+            llm = initialize_llm(get_active_providers()[0])
+            prompt = (
+                "Map each placeholder to ONE of these field names, or 'none' if no good "
+                "match. Fields: recipient_email, company_name, job_position, "
+                "job_description, website, first_name, last_name, recipient_name.\n"
+                "Return ONLY JSON like {\"placeholder\":\"field\"}.\n"
+                f"Placeholders: {json.dumps(unmatched)}"
+            )
+            raw = llm.invoke(prompt).content
+            raw = raw[raw.find("{"): raw.rfind("}") + 1]
+            ai_map = json.loads(raw)
+            for ph in unmatched:
+                f = ai_map.get(ph) or ai_map.get(ph.lower())
+                if f and f in TEMPLATE_FIELDS:
+                    mapping[ph] = f
+        except Exception as e:
+            print(f"ℹ️ placeholder AI-mapping skipped: {e}")
+    return mapping
+
+def fill_template(template, mapping, values):
+    """Replace every recognised placeholder in the template with the row's value.
+    Unmapped placeholders are left blank rather than printed literally."""
+    out = template
+    all_phs = find_template_placeholders(template)
+    for ph in all_phs:
+        field = mapping.get(ph)
+        val = values.get(field, "") if field else ""
+        # replace {{ph}}, {ph}, [ph], <ph> (case-insensitive on the token)
+        pattern = _re.compile(
+            r'\{\{?\s*' + _re.escape(ph) + r'\s*\}?\}'
+            r'|\[\s*' + _re.escape(ph) + r'\s*\]'
+            r'|<\s*' + _re.escape(ph) + r'\s*>',
+            _re.IGNORECASE,
+        )
+        out = pattern.sub(val, out)
+    return clean_letter_output(out)
+
+
 def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application", custom_prompt=None, use_recipient_name=False):
     """
     Background worker: reads the Excel, picks ONE resume per row, then generates a
@@ -1185,7 +1270,16 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
             JOBS[job_id]["error"] = f"Error loading resume texts: {e}"
             return
 
-        providers = get_active_providers()
+        # Template-fill mode: no AI generation per row (saves tokens). The custom_prompt
+        # textarea holds the ready-made template; we map its placeholders once, up front.
+        template_mode = (content_type == "template_fill")
+        if template_mode:
+            providers = ["template"]
+            template_text = custom_prompt or ""
+            placeholder_map = map_placeholders(find_template_placeholders(template_text))
+            print(f"🧩 Template mode: placeholders mapped -> {placeholder_map}")
+        else:
+            providers = get_active_providers()
         # Provider used only for picking the resume (kept identical across all tabs).
         selection_provider = providers[0]
 
@@ -1224,6 +1318,30 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
             if not recipient_email and not company_name:
                 print(f"⏭️  Skipping blank row {index + 1} (no email / company).")
                 done_steps += len(providers)
+                JOBS[job_id]["progress"] = done_steps
+                continue
+
+            # In template mode, just fill the template locally — no AI, no research.
+            if template_mode:
+                values = {
+                    "recipient_email": recipient_email, "company_name": company_name,
+                    "job_position": job_position, "job_description": job_description,
+                    "website": company_website, "first_name": first_name,
+                    "last_name": last_name,
+                    "recipient_name": " ".join(p for p in [first_name, last_name] if p).strip(),
+                }
+                filled = fill_template(template_text, placeholder_map, values)
+                best_resume_filename = next(iter(resume_texts)) if resume_texts else ""
+                emails_data.append({
+                    'recipient_email': recipient_email,
+                    'company_name': company_name,
+                    'job_position': job_position,
+                    'job_description': job_description or "No job description available.",
+                    'selected_resume': best_resume_filename,
+                    'content_type': content_type,
+                    'cover_letters': {"template": filled},
+                })
+                done_steps += 1
                 JOBS[job_id]["progress"] = done_steps
                 continue
 
@@ -1362,6 +1480,27 @@ def review_emails(job_id):
 
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 
+def clean_email_address(raw):
+    """Return a clean, valid single email address, or None if it isn't valid.
+    Gmail rejects a 'To' header that has newlines, extra whitespace, display-name
+    wrapping, or multiple addresses ('Invalid To header'), so we normalise here."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    # If the cell is like 'Name <a@b.com>', pull out the address in angle brackets.
+    m = _re.search(r'<([^>]+)>', s)
+    if m:
+        s = m.group(1).strip()
+    # If several addresses are present (comma/semicolon/space separated), take the first.
+    s = _re.split(r'[,;\s]+', s)[0].strip() if s else s
+    # Strip any stray whitespace / newline characters that break the header.
+    s = s.replace("\n", "").replace("\r", "").replace(" ", "")
+    # Basic validity check.
+    if _re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', s):
+        return s
+    return None
+
+
 def send_message_via_gmail_api(creds, to_email, subject, body_text, attachment_path=None,
                                bcc_email=None, inline_image_path=None):
     """
@@ -1485,6 +1624,8 @@ def send_email():
                 or email.get("cover_letter", "")  # legacy fallback
             )
 
+    sent_count = 0
+    skipped = []
     try:
         # Optional: BCC to yourself (the logged-in Google account)
         # We'll fetch it inside send_message_via_gmail_api, so just pass None here
@@ -1508,10 +1649,22 @@ def send_email():
                 firm = (email.get("company_name") or "").strip()
                 subject = f"Investment opportunity — introduction for {firm}" if firm \
                     else "Investment opportunity — introduction"
+            elif email_content_type == "template_fill":
+                firm = (email.get("company_name") or "").strip()
+                pos = (email.get("job_position") or "").strip()
+                subject = (f"{pos} — {firm}" if pos and firm else (firm or pos or "Hello"))
             else:
                 subject = f"Job Application for {email['job_position']}"
 
             body_text = email.get("_send_text", "")
+
+            # Clean & validate the recipient address so one bad cell doesn't abort
+            # the whole batch with Gmail's "Invalid To header".
+            to_email = clean_email_address(email.get("recipient_email"))
+            if not to_email:
+                print(f"⚠️ Skipping invalid recipient: {email.get('recipient_email')!r}")
+                skipped.append(email.get("recipient_email"))
+                continue
 
             # In workshop mode, embed the uploaded banner inside the email body.
             inline_image_path = None
@@ -1520,15 +1673,15 @@ def send_email():
 
             send_message_via_gmail_api(
                 creds=creds,
-                to_email=email["recipient_email"],
+                to_email=to_email,
                 subject=subject,
                 body_text=body_text,
                 attachment_path=resume_path,
                 bcc_email=None,  # or set to a fixed address if you like
                 inline_image_path=inline_image_path
             )
-
-            print(f"✅ Email sent to {email['recipient_email']} for {email['job_position']}")
+            sent_count += 1
+            print(f"✅ Email sent to {to_email} for {email['job_position']}")
 
     except Exception as e:
         msg = str(e)
@@ -1545,6 +1698,13 @@ def send_email():
         print(f"❌ Failed to send emails. Error: {e}")
         return jsonify({"success": False, "message": f"Error: {e}"})
 
+    if sent_count == 0 and skipped:
+        return jsonify({"success": False,
+                        "message": "No emails sent — the recipient address(es) were "
+                                   "invalid or empty. Please check the Email column."})
+    if skipped:
+        return jsonify({"success": True, "redirect_url": "/success",
+                        "message": f"Sent {sent_count}. Skipped {len(skipped)} invalid address(es)."})
     return jsonify({"success": True, "redirect_url": "/success"})
 
 
