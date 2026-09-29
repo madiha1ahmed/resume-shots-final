@@ -1457,10 +1457,11 @@ def generate_cover_letters():
 @app.route('/review/<job_id>', methods=['GET'])
 def review_emails(job_id):
     job = JOBS.get(job_id)
+
     if not job or job["status"] != "done":
         return redirect(url_for('upload_files'))
 
-        emails_data = job["emails_data"]
+    emails_data = job["emails_data"]
     providers = job.get("providers") or get_active_providers()
 
     # Also put in session so send_email works
@@ -1478,7 +1479,6 @@ def review_emails(job_id):
         provider_labels=PROVIDER_LABELS,
         batch_mode=batch_mode,
     )
-
 
  # "dclo ewei hyrg ltar"
 
