@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -62,6 +63,14 @@
                 <input type="file" class="form-control" name="workshop_image" id="workshop_image" accept="image/*">
                 <div id="imagePreview" class="mt-2"></div>
                 <small class="text-muted">This image is placed <strong>inside the email body</strong> (not as an attachment).</small>
+            </div>
+
+            <div class="mb-3" id="subjectWrap" style="display:none;">
+                <label class="form-label">Email subject line</label>
+                <input type="text" class="form-control" name="subject_template" id="subject_template"
+                       placeholder="e.g. Partnership opportunity with {Company}">
+                <small class="text-muted">Same for every email. You can use placeholders like
+                    {Company} or {First Name} — they fill in per recipient.</small>
             </div>
 
             <!-- Advanced: custom prompt (optional) -->
@@ -348,6 +357,9 @@
         const customText    = document.getElementById("custom_prompt");
         function toggleTemplateMode() {
             const isTpl = contentTypeSel.value === "template_fill";
+            const subjWrap = document.getElementById("subjectWrap");
+            if (subjWrap) subjWrap.style.display = isTpl ? "block" : "none";
+
             if (isTpl) {
                 // reveal the box and relabel it as a template box
                 if (customBox && !customBox.classList.contains("show")) {
