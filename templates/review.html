@@ -23,6 +23,115 @@
 <div class="container-fluid px-4 mt-4" style="max-width: 1400px;">
 
     <h2 class="text-center">Review & Send</h2>
+    {% if batch_mode %}
+    <p class="text-center text-muted mb-1">
+        Review each email below, edit if needed, tick the ones you want, then click
+        <strong>Send all approved</strong> to send them in one go.
+    </p>
+
+    <!-- ================= BATCH TABLE (template mode) ================= -->
+    <form id="batchForm">
+        <input type="hidden" name="provider" value="{{ providers[0] }}">
+        <div class="d-flex justify-content-between align-items-center my-3">
+            <div>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleAll(true)">Select all</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleAll(false)">Clear all</button>
+            </div>
+            <button type="submit" class="btn btn-success btn-lg" id="sendAllBtn">✅ Send all approved</button>
+        </div>
+
+        <div id="batchProgressWrap" class="progress mb-3 d-none" style="height: 22px;">
+            <div id="batchProgress" class="progress-bar bg-success" style="width:0%">0%</div>
+        </div>
+
+        <div class="table-responsive">
+        <table class="table table-bordered align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th style="width:34px;"><input type="checkbox" id="masterCheck" onclick="toggleAll(this.checked)" checked></th>
+                    <th>Recipient</th>
+                    <th>Company</th>
+                    <th style="min-width:420px;">Email (editable)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for email in emails_data %}
+                {% set row_i = loop.index %}
+                <tr>
+                    <td class="text-center">
+                        <input type="checkbox" class="rowCheck" name="approve_" value="{{ row_i }}" checked>
+                    </td>
+                    <td>
+                        <div><strong>{{ email.recipient_name if email.recipient_name else '' }}</strong></div>
+                        <div class="text-muted" style="font-size:.85rem;">{{ email.recipient_email }}</div>
+                    </td>
+                    <td>{{ email.company_name }}</td>
+                    <td>
+                        <textarea class="form-control" name="cover_letter_{{ row_i }}"
+                                  rows="6" style="font-size:.9rem;">{{ email.cover_letters.get(providers[0], '') }}</textarea>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+
+        <button type="submit" class="btn btn-success btn-lg mb-4">✅ Send all approved</button>
+    </form>
+    </div>
+
+    <div class="sent-toast">
+        <div id="sentToast" class="alert alert-success shadow d-none mb-0">✅ Sent!</div>
+    </div>
+
+    <script>
+        function toggleAll(state) {
+            document.querySelectorAll(".rowCheck").forEach(c => c.checked = state);
+            const m = document.getElementById("masterCheck"); if (m) m.checked = state;
+        }
+        document.getElementById("batchForm").addEventListener("submit", function (e) {
+            e.preventDefault();
+            const checked = document.querySelectorAll(".rowCheck:checked").length;
+            if (!checked) { alert("Please tick at least one email to send."); return; }
+            if (!confirm("Send " + checked + " email(s)?")) return;
+
+            const btns = document.querySelectorAll("#batchForm button[type=submit]");
+            btns.forEach(b => b.disabled = true);
+            const wrap = document.getElementById("batchProgressWrap");
+            const bar = document.getElementById("batchProgress");
+            wrap.classList.remove("d-none");
+
+            let p = 0;
+            const tick = setInterval(() => {
+                if (p < 90) { p += 8; bar.style.width = p + "%"; bar.textContent = p + "%"; }
+            }, 400);
+
+            $.ajax({
+                url: "/send_email", type: "POST",
+                data: new FormData(this), processData: false, contentType: false,
+                success: function (resp) {
+                    clearInterval(tick);
+                    bar.style.width = "100%"; bar.textContent = "100%";
+                    if (resp.success) {
+                        document.getElementById("sentToast").classList.remove("d-none");
+                        setTimeout(() => window.location.href = resp.redirect_url || "/success", 1200);
+                    } else {
+                        btns.forEach(b => b.disabled = false);
+                        alert(resp.message || "Could not send.");
+                        if (resp.reconnect) window.location.href = "{{ url_for('home') }}";
+                    }
+                },
+                error: function (x, s, err) {
+                    clearInterval(tick);
+                    btns.forEach(b => b.disabled = false);
+                    alert("❌ Error sending: " + err);
+                }
+            });
+        });
+    </script>
+    </div>
+    </body></html>
+    {% else %}
     <p class="text-center text-muted mb-1">
         Each row shows all AI-generated letters side by side. Pick the one you like,
         edit if needed, then send — the next row appears automatically.
@@ -228,3 +337,5 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
+
+{% endif %}
