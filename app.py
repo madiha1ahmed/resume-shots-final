@@ -1460,11 +1460,15 @@ def review_emails(job_id):
     if not job or job["status"] != "done":
         return redirect(url_for('upload_files'))
 
-    emails_data = job["emails_data"]
+        emails_data = job["emails_data"]
     providers = job.get("providers") or get_active_providers()
 
     # Also put in session so send_email works
     session['emails_data'] = emails_data
+
+    # Batch mode (approve many + one Send-all) when there's a single version per row
+    # i.e. template fill. AI modes keep the per-row side-by-side compare + send.
+    batch_mode = (len(providers) == 1)
 
     return render_template(
         'review.html',
@@ -1472,8 +1476,8 @@ def review_emails(job_id):
         job_id=job_id,
         providers=providers,
         provider_labels=PROVIDER_LABELS,
+        batch_mode=batch_mode,
     )
-
 
 
  # "dclo ewei hyrg ltar"
