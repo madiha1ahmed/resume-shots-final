@@ -992,20 +992,20 @@ def upload_files():
         session['resume_paths'] = resume_paths  # Keep only file paths in session
 
         # Optional custom prompt (advanced users can override the default template)
-        custom_prompt = (request.form.get('custom_prompt') or '').strip()
-
-        if custom_prompt:
-            session['custom_prompt'] = custom_prompt
-        else:
-            session.pop('custom_prompt', None)
-        
-        # Store subject independently
-        subject_template = (
-            request.form.get('subject_template') or ''
+        custom_prompt = (
+            request.form.get("custom_prompt") or ""
         ).strip()
         
-        session['subject_template'] = subject_template
-
+        if custom_prompt:
+            session["custom_prompt"] = custom_prompt
+        else:
+            session.pop("custom_prompt", None)
+        
+        subject_template = (
+            request.form.get("subject_template") or ""
+        ).strip()
+        
+        session["subject_template"] = subject_template
         # Optional workshop banner image — embedded inline in workshop emails.
         workshop_image = request.files.get('workshop_image')
         if workshop_image and workshop_image.filename:
@@ -1278,7 +1278,15 @@ def fill_template(template, mapping, values):
     return clean_letter_output(out)
 
 
-def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application", custom_prompt=None, use_recipient_name=False, subject_template=None):
+def process_cover_letter_job(
+    job_id,
+    email_path,
+    resume_paths,
+    content_type="job_application",
+    custom_prompt=None,
+    use_recipient_name=False,
+    subject_template=None
+):
     """
     Background worker: reads the Excel, picks ONE resume per row, then generates a
     letter with EVERY active provider so the user can compare them in tabs.
@@ -1286,10 +1294,14 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
     """
     try:
         # Load Excel/CSV
-        df = pd.read_excel(email_path) if email_path.endswith('.xlsx') else pd.read_csv(email_path)
+        df = (
+            pd.read_excel(email_path)
+            if email_path.endswith(".xlsx")
+            else pd.read_csv(email_path)
+        )
         total_jobs = len(df)
 
-        # Load resume texts from JSON
+        # Load resume texts
         try:
             with open("resume_texts.json", "r") as f:
                 resume_texts = json.load(f)
@@ -1299,64 +1311,25 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
             JOBS[job_id]["error"] = f"Error loading resume texts: {e}"
             return
 
-        # Template-fill mode: no AI generation per row (saves tokens). The custom_prompt
-        # textarea holds the ready-made template; we map its placeholders once, up front.
         template_mode = (content_type == "template_fill")
-        # In template mode, just fill the template locally — no AI, no research.
-if template_mode:
-    values = {
-        "recipient_email": recipient_email,
-        "company_name": company_name,
-        "job_position": job_position,
-        "job_description": job_description,
-        "website": company_website,
-        "first_name": first_name,
-        "last_name": last_name,
-        "recipient_name": " ".join(
-            p for p in [first_name, last_name] if p
-        ).strip(),
-    }
 
-    # Fill subject separately using the same recipient values
-    subject_filled = (
-        fill_template(subject_template, placeholder_map, values)
-        if subject_template
-        else ""
-    )
+        if template_mode:
+            providers = ["template"]
+            template_text = custom_prompt or ""
 
-    # Fill email body
-    filled = fill_template(
-        template_text,
-        placeholder_map,
-        values
-    )
+            # Map placeholders from BOTH body and subject
+            placeholder_map = map_placeholders(
+                find_template_placeholders(template_text)
+                + find_template_placeholders(subject_template or "")
+            )
 
-    best_resume_filename = (
-        next(iter(resume_texts))
-        if resume_texts
-        else ""
-    )
-
-    emails_data.append({
-        "recipient_email": recipient_email,
-        "company_name": company_name,
-        "job_position": job_position,
-        "job_description": job_description or "No job description available.",
-        "selected_resume": best_resume_filename,
-        "content_type": content_type,
-        "subject": subject_filled,
-        "cover_letters": {
-            "template": filled
-        },
-    })
-
-    done_steps += 1
-    JOBS[job_id]["progress"] = done_steps
-    continue
-    
+            print(
+                f"🧩 Template mode: placeholders mapped -> "
+                f"{placeholder_map}"
+            )
         else:
             providers = get_active_providers()
-        # Provider used only for picking the resume (kept identical across all tabs).
+
         selection_provider = providers[0]
 
         emails_data = []
@@ -1367,79 +1340,194 @@ if template_mode:
         JOBS[job_id]["progress"] = 0
 
         done_steps = 0
+
         for index, row in df.iterrows():
-            # Read by COLUMN POSITION, not header name, so different / truncated
-            # headers (e.g. "Recruiter Email" instead of "Email") still work.
-            #   col 0 -> Recruiter Email
-            #   col 1 -> Company Name
-            #   col 2 -> Job Position
-            #   col 3 -> Job Description
-            #   col 4 -> Company Website
+
             recipient_email = cell_at(row, 0)
-            company_name    = cell_at(row, 1)
-            job_position    = cell_at(row, 2)
+            company_name = cell_at(row, 1)
+            job_position = cell_at(row, 2)
             job_description = cell_at(row, 3)
             company_website = cell_at(row, 4)
-            # Optional columns 6 & 7: First Name, Last Name (for a personalised greeting)
-            first_name      = cell_at(row, 5)
-            last_name       = cell_at(row, 6)
-            # Only build the personalised greeting name if the user enabled that option.
+            first_name = cell_at(row, 5)
+            last_name = cell_at(row, 6)
+
             if use_recipient_name:
-                recipient_name = " ".join(p for p in [first_name, last_name] if p).strip()
+                recipient_name = " ".join(
+                    p for p in [first_name, last_name] if p
+                ).strip()
             else:
                 recipient_name = ""
 
-            # Skip blank / trailing rows: if there's no recipient email AND no company,
-            # this row has no real data — don't waste API calls generating junk.
+            # Skip completely blank rows
             if not recipient_email and not company_name:
-                print(f"⏭️  Skipping blank row {index + 1} (no email / company).")
+                print(
+                    f"⏭️ Skipping blank row {index + 1} "
+                    f"(no email / company)."
+                )
+
                 done_steps += len(providers)
                 JOBS[job_id]["progress"] = done_steps
                 continue
 
-            # In template mode, just fill the template locally — no AI, no research.
+            # =========================================================
+            # TEMPLATE MODE
+            # =========================================================
             if template_mode:
                 values = {
-                    "recipient_email": recipient_email, "company_name": company_name,
-                    "job_position": job_position, "job_description": job_description,
-                    "website": company_website, "first_name": first_name,
+                    "recipient_email": recipient_email,
+                    "company_name": company_name,
+                    "job_position": job_position,
+                    "job_description": job_description,
+                    "website": company_website,
+                    "first_name": first_name,
                     "last_name": last_name,
-                    "recipient_name": " ".join(p for p in [first_name, last_name] if p).strip(),
-                    'subject': subject_filled,
+                    "recipient_name": " ".join(
+                        p for p in [first_name, last_name] if p
+                    ).strip(),
                 }
-                subject_filled = fill_template(subject_template, placeholder_map, values) if subject_template else ""
-                filled = fill_template(template_text, placeholder_map, values)
-                best_resume_filename = next(iter(resume_texts)) if resume_texts else ""
+
+                # Fill subject placeholders
+                subject_filled = (
+                    fill_template(
+                        subject_template,
+                        placeholder_map,
+                        values
+                    )
+                    if subject_template
+                    else ""
+                )
+
+                # Fill email body placeholders
+                filled = fill_template(
+                    template_text,
+                    placeholder_map,
+                    values
+                )
+
+                best_resume_filename = (
+                    next(iter(resume_texts))
+                    if resume_texts
+                    else ""
+                )
+
                 emails_data.append({
-                    'recipient_email': recipient_email,
-                    'company_name': company_name,
-                    'job_position': job_position,
-                    'job_description': job_description or "No job description available.",
-                    'selected_resume': best_resume_filename,
-                    'content_type': content_type,
-                    'cover_letters': {"template": filled},
+                    "recipient_email": recipient_email,
+                    "company_name": company_name,
+                    "job_position": job_position,
+                    "job_description":
+                        job_description or "No job description available.",
+                    "selected_resume": best_resume_filename,
+                    "content_type": content_type,
+
+                    # IMPORTANT
+                    "subject": subject_filled,
+
+                    "cover_letters": {
+                        "template": filled
+                    },
                 })
+
                 done_steps += 1
                 JOBS[job_id]["progress"] = done_steps
+
                 continue
 
-            # Pick ONE resume for this row; the same resume appears in every provider tab.
-            best_resume_filename = select_best_resume(job_description, resume_texts, selection_provider)
+            # =========================================================
+            # AI MODES
+            # =========================================================
+
+            best_resume_filename = select_best_resume(
+                job_description,
+                resume_texts,
+                selection_provider
+            )
+
             if not best_resume_filename and resume_texts:
-                best_resume_filename = next(iter(resume_texts))  # fallback: first resume
-            print(f"🔍 Selected Resume for {job_position}: {best_resume_filename}")
+                best_resume_filename = next(iter(resume_texts))
 
-            best_resume_text = resume_texts.get(best_resume_filename, "")
+            print(
+                f"🔍 Selected Resume for {job_position}: "
+                f"{best_resume_filename}"
+            )
 
-            # Optional website info
-            # Gather real research about the employer (their website + a live web
-            # search) once per row — shared across all three providers.
-            website_info = gather_company_context(company_name, company_website, job_position, custom_prompt)
+            best_resume_text = resume_texts.get(
+                best_resume_filename,
+                ""
+            )
 
-            # Generate letters for all providers IN PARALLEL (each is a network call,
-            # so running them together makes each row take ~the slowest provider's time
-            # instead of the sum of all three).
+            website_info = gather_company_context(
+                company_name,
+                company_website,
+                job_position,
+                custom_prompt
+            )
+
             cover_letters = {}
+
+            def _gen(provider):
+                try:
+                    return provider, generate_cover_letter(
+                        company_name,
+                        job_position,
+                        job_description,
+                        website_info,
+                        best_resume_text,
+                        provider,
+                        content_type,
+                        custom_prompt,
+                        recipient_name
+                    )
+                except Exception as e:
+                    print(
+                        f"❌ {provider} failed for "
+                        f"{job_position}: {e}"
+                    )
+                    return (
+                        provider,
+                        f"[{provider} could not generate this letter: {e}]"
+                    )
+
+            with ThreadPoolExecutor(
+                max_workers=len(providers)
+            ) as ex:
+
+                futures = [
+                    ex.submit(_gen, p)
+                    for p in providers
+                ]
+
+                for fut in as_completed(futures):
+                    provider, letter = fut.result()
+                    cover_letters[provider] = letter
+
+                    done_steps += 1
+                    JOBS[job_id]["progress"] = done_steps
+
+            emails_data.append({
+                "recipient_email": recipient_email,
+                "company_name": company_name,
+                "job_position": job_position,
+                "job_description":
+                    job_description or "No job description available.",
+                "selected_resume": best_resume_filename,
+                "content_type": content_type,
+                "cover_letters": cover_letters,
+            })
+
+        JOBS[job_id]["emails_data"] = emails_data
+        JOBS[job_id]["status"] = "done"
+        JOBS[job_id]["error"] = None
+
+        print(
+            f"✅ Job {job_id} completed: "
+            f"{len(emails_data)} rows × "
+            f"{len(providers)} providers."
+        )
+
+    except Exception as e:
+        print(f"❌ Unexpected error in job {job_id}: {e}")
+        JOBS[job_id]["status"] = "error"
+        JOBS[job_id]["error"] = str(e)
 
             def _gen(provider):
                 try:
@@ -1738,7 +1826,8 @@ def send_email():
             elif email_content_type == "template_fill":
                 firm = (email.get("company_name") or "").strip()
                 pos = (email.get("job_position") or "").strip()
-                subject = (f"{pos} — {firm}" if pos and firm else (firm or pos or "Hello"))
+                subject = (email.get("subject") or "Message")
+                #subject = (f"{pos} — {firm}" if pos and firm else (firm or pos or "Hello"))
             else:
                 subject = f"Job Application for {email['job_position']}"
 
