@@ -993,10 +993,18 @@ def upload_files():
 
         # Optional custom prompt (advanced users can override the default template)
         custom_prompt = (request.form.get('custom_prompt') or '').strip()
+
         if custom_prompt:
             session['custom_prompt'] = custom_prompt
-                    # Optional custom subject line (may contain placeholders like {Company})
-            session['subject_template'] = (request.form.get('subject_template') or '').strip()
+        else:
+            session.pop('custom_prompt', None)
+        
+        # Store subject independently
+        subject_template = (
+            request.form.get('subject_template') or ''
+        ).strip()
+        
+        session['subject_template'] = subject_template
 
         # Optional workshop banner image — embedded inline in workshop emails.
         workshop_image = request.files.get('workshop_image')
@@ -1294,14 +1302,58 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
         # Template-fill mode: no AI generation per row (saves tokens). The custom_prompt
         # textarea holds the ready-made template; we map its placeholders once, up front.
         template_mode = (content_type == "template_fill")
-        if template_mode:
-            providers = ["template"]
-            template_text = custom_prompt or ""
-            placeholder_map = map_placeholders(
-                find_template_placeholders(template_text)
-                + find_template_placeholders(subject_template or "")
-            )
-            print(f"🧩 Template mode: placeholders mapped -> {placeholder_map}")
+        # In template mode, just fill the template locally — no AI, no research.
+if template_mode:
+    values = {
+        "recipient_email": recipient_email,
+        "company_name": company_name,
+        "job_position": job_position,
+        "job_description": job_description,
+        "website": company_website,
+        "first_name": first_name,
+        "last_name": last_name,
+        "recipient_name": " ".join(
+            p for p in [first_name, last_name] if p
+        ).strip(),
+    }
+
+    # Fill subject separately using the same recipient values
+    subject_filled = (
+        fill_template(subject_template, placeholder_map, values)
+        if subject_template
+        else ""
+    )
+
+    # Fill email body
+    filled = fill_template(
+        template_text,
+        placeholder_map,
+        values
+    )
+
+    best_resume_filename = (
+        next(iter(resume_texts))
+        if resume_texts
+        else ""
+    )
+
+    emails_data.append({
+        "recipient_email": recipient_email,
+        "company_name": company_name,
+        "job_position": job_position,
+        "job_description": job_description or "No job description available.",
+        "selected_resume": best_resume_filename,
+        "content_type": content_type,
+        "subject": subject_filled,
+        "cover_letters": {
+            "template": filled
+        },
+    })
+
+    done_steps += 1
+    JOBS[job_id]["progress"] = done_steps
+    continue
+    
         else:
             providers = get_active_providers()
         # Provider used only for picking the resume (kept identical across all tabs).
