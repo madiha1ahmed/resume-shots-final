@@ -835,15 +835,34 @@ Candidate's Resume (the only source of facts about the sender):
 """
 
 def clean_letter_output(text):
-    """Safety net: strip stray Markdown so emails don't show ** or # literally."""
+    """Strip stray Markdown and un-hard-wrap paragraphs so emails read as flowing
+    text, not one-word-per-line 'poems'. Works block by block: a multi-line block of
+    real prose is joined into flowing lines, while short-line blocks (greeting,
+    signature, address) keep their line breaks."""
     if not text:
         return text
-    out = text
-    out = out.replace("**", "").replace("__", "")   # bold markers
-    # remove leading markdown heading hashes on any line ("## Title" -> "Title")
+    out = text.replace("**", "").replace("__", "")
     out = _re.sub(r'(?m)^\s{0,3}#{1,6}\s*', '', out)
-    # strip markdown code fences if a model wrapped the whole thing
     out = _re.sub(r'(?m)^\s*```[a-zA-Z]*\s*$', '', out)
+    out = out.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Split into blocks on blank lines; decide per block whether it's wrapped prose.
+    blocks = _re.split(r'\n\s*\n', out)
+    fixed = []
+    for block in blocks:
+        lines = [ln.strip() for ln in block.split("\n") if ln.strip() != ""]
+        if len(lines) <= 1:
+            fixed.append(block.strip())
+            continue
+        # A wrapped-prose block has long-ish lines (the wrap width). A signature /
+        # address block has short lines. Use the average line length to tell them apart.
+        avg = sum(len(ln) for ln in lines) / len(lines)
+        longest = max(len(ln) for ln in lines)
+        if avg > 35 or longest >= 55:
+            fixed.append(" ".join(lines))          # flow into one paragraph
+        else:
+            fixed.append("\n".join(lines))         # keep the short-line block as-is
+    out = "\n\n".join(b for b in fixed if b != "")
     return out.strip()
 
 
