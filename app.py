@@ -976,6 +976,8 @@ def upload_files():
         custom_prompt = (request.form.get('custom_prompt') or '').strip()
         if custom_prompt:
             session['custom_prompt'] = custom_prompt
+                    # Optional custom subject line (may contain placeholders like {Company})
+            session['subject_template'] = (request.form.get('subject_template') or '').strip()
 
         # Optional workshop banner image — embedded inline in workshop emails.
         workshop_image = request.files.get('workshop_image')
@@ -1249,7 +1251,7 @@ def fill_template(template, mapping, values):
     return clean_letter_output(out)
 
 
-def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application", custom_prompt=None, use_recipient_name=False):
+def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job_application", custom_prompt=None, use_recipient_name=False, subject_template=None):
     """
     Background worker: reads the Excel, picks ONE resume per row, then generates a
     letter with EVERY active provider so the user can compare them in tabs.
@@ -1276,7 +1278,10 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
         if template_mode:
             providers = ["template"]
             template_text = custom_prompt or ""
-            placeholder_map = map_placeholders(find_template_placeholders(template_text))
+            placeholder_map = map_placeholders(
+                find_template_placeholders(template_text)
+                + find_template_placeholders(subject_template or "")
+            )
             print(f"🧩 Template mode: placeholders mapped -> {placeholder_map}")
         else:
             providers = get_active_providers()
@@ -1329,7 +1334,9 @@ def process_cover_letter_job(job_id, email_path, resume_paths, content_type="job
                     "website": company_website, "first_name": first_name,
                     "last_name": last_name,
                     "recipient_name": " ".join(p for p in [first_name, last_name] if p).strip(),
+                    'subject': subject_filled,
                 }
+                subject_filled = fill_template(subject_template, placeholder_map, values) if subject_template else ""
                 filled = fill_template(template_text, placeholder_map, values)
                 best_resume_filename = next(iter(resume_texts)) if resume_texts else ""
                 emails_data.append({
@@ -1419,6 +1426,7 @@ def generate_cover_letters():
 
     # Optional custom prompt the user typed on the upload page (blank -> use defaults)
     custom_prompt = session.get('custom_prompt') or None
+    subject_template = session.get('subject_template') or None
 
     # Optional: address recipients by name (uses First/Last name columns)
     use_recipient_name = (request.args.get('use_name', '').lower() == 'true')
@@ -1443,7 +1451,7 @@ def generate_cover_letters():
     # Start a background thread to process this job
     t = Thread(
         target=process_cover_letter_job,
-        args=(job_id, email_path, resume_paths, content_type, custom_prompt, use_recipient_name),
+        args=(job_id, email_path, resume_paths, content_type, custom_prompt, use_recipient_name, subject_template),
         daemon=True
     )
     t.start()
@@ -1643,7 +1651,10 @@ def send_email():
 
             # Subject depends on whether this is a job application or a workshop promotion.
             email_content_type = email.get("content_type") or session.get("content_type", "job_application")
-            if email_content_type == "workshop_promotion":
+            if email.get('subject'):
+                subject = email['subject']
+                
+            elif email_content_type == "workshop_promotion":
                 topic = (email.get("job_position") or "").strip()
                 if topic:
                     subject = f"Workshop Invitation: {topic}"
