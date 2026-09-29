@@ -1464,70 +1464,7 @@ def process_cover_letter_job(
 
             cover_letters = {}
 
-            def _gen(provider):
-                try:
-                    return provider, generate_cover_letter(
-                        company_name,
-                        job_position,
-                        job_description,
-                        website_info,
-                        best_resume_text,
-                        provider,
-                        content_type,
-                        custom_prompt,
-                        recipient_name
-                    )
-                except Exception as e:
-                    print(
-                        f"❌ {provider} failed for "
-                        f"{job_position}: {e}"
-                    )
-                    return (
-                        provider,
-                        f"[{provider} could not generate this letter: {e}]"
-                    )
-
-            with ThreadPoolExecutor(
-                max_workers=len(providers)
-            ) as ex:
-
-                futures = [
-                    ex.submit(_gen, p)
-                    for p in providers
-                ]
-
-                for fut in as_completed(futures):
-                    provider, letter = fut.result()
-                    cover_letters[provider] = letter
-
-                    done_steps += 1
-                    JOBS[job_id]["progress"] = done_steps
-
-            emails_data.append({
-                "recipient_email": recipient_email,
-                "company_name": company_name,
-                "job_position": job_position,
-                "job_description":
-                    job_description or "No job description available.",
-                "selected_resume": best_resume_filename,
-                "content_type": content_type,
-                "cover_letters": cover_letters,
-            })
-
-        JOBS[job_id]["emails_data"] = emails_data
-        JOBS[job_id]["status"] = "done"
-        JOBS[job_id]["error"] = None
-
-        print(
-            f"✅ Job {job_id} completed: "
-            f"{len(emails_data)} rows × "
-            f"{len(providers)} providers."
-        )
-
-    except Exception as e:
-        print(f"❌ Unexpected error in job {job_id}: {e}")
-        JOBS[job_id]["status"] = "error"
-        JOBS[job_id]["error"] = str(e)
+            
 
             def _gen(provider):
                 try:
